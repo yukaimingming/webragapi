@@ -1,0 +1,16 @@
+# .NET 构建产物
+bin/
+obj/
+*.user
+*.suo
+
+# Visual Studio / Rider 缓存
+.vs/
+.idea/
+
+# 本地运行数据（不进仓库）：向量库数据文件、上传的文档
+qdrant_storage/
+App_Data/
+
+# 临时文件
+*.log

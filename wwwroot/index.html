@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WebRag API 知识库问答 Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; background: #f0f2f5; color: #1f2329; }
+  header { background: linear-gradient(90deg, #1a5fb4, #268bd2); color: #fff; padding: 16px 24px; }
+  header h1 { font-size: 20px; }
+  header p { font-size: 12px; opacity: .85; margin-top: 4px; }
+  .wrap { max-width: 1100px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.08); padding: 18px; }
+  .card h2 { font-size: 16px; margin-bottom: 12px; color: #1a5fb4; border-bottom: 2px solid #eef2f7; padding-bottom: 8px; }
+  .full { grid-column: 1 / -1; }
+  textarea, input[type=text] { width: 100%; border: 1px solid #d0d7de; border-radius: 6px; padding: 8px 10px; font-size: 14px; font-family: inherit; }
+  textarea { height: 72px; resize: vertical; }
+  button { background: #1a5fb4; color: #fff; border: 0; border-radius: 6px; padding: 8px 18px; font-size: 14px; cursor: pointer; }
+  button:hover { background: #164c90; }
+  button:disabled { background: #9db8d8; cursor: wait; }
+  button.gray { background: #6e7781; }
+  button.red { background: #cf222e; padding: 4px 10px; font-size: 12px; }
+  button.small { padding: 4px 10px; font-size: 12px; }
+  .row { display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+  .answer { background: #f6f8fa; border-radius: 8px; padding: 12px; margin-top: 10px; white-space: pre-wrap; line-height: 1.7; font-size: 14px; min-height: 40px; }
+  .sources { margin-top: 10px; }
+  .sources .src { display: inline-block; background: #e7f0fb; color: #1a5fb4; border-radius: 12px; padding: 3px 12px; font-size: 12px; margin: 2px 4px 2px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
+  th, td { border-bottom: 1px solid #eef1f4; padding: 7px 8px; text-align: left; word-break: break-all; }
+  th { color: #6e7781; font-weight: 600; background: #fafbfc; }
+  .ref { background: #f6f8fa; border-left: 3px solid #268bd2; border-radius: 4px; padding: 8px 10px; margin-top: 8px; font-size: 13px; line-height: 1.6; }
+  .ref .meta { color: #6e7781; font-size: 12px; margin-bottom: 4px; }
+  .badge { display: inline-block; border-radius: 10px; padding: 1px 8px; font-size: 12px; margin-right: 4px; }
+  .b-ok { background: #dafbe1; color: #116329; }
+  .b-warn { background: #fff3cd; color: #7a5b00; }
+  .b-err { background: #ffebe9; color: #a40e26; }
+  .progress { height: 8px; background: #eef1f4; border-radius: 4px; overflow: hidden; margin-top: 6px; }
+  .progress div { height: 100%; background: #268bd2; transition: width .3s; }
+  .hint { color: #8b949e; font-size: 12px; margin-top: 6px; }
+  .task-line { font-size: 13px; margin-top: 8px; }
+  #uploadResults { font-size: 13px; margin-top: 8px; line-height: 1.8; }
+  .empty { color: #8b949e; font-size: 13px; padding: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WebRag API 知识库问答 Demo</h1>
+  <p>.NET 10 + Qdrant + Ollama(bge-m3) + 商汤 SenseNova ｜ 接口文档：<a href="/scalar" style="color:#fff">/scalar</a></p>
+</header>
+
+<div class="wrap">
+  <!-- 知识库管理 -->
+  <div class="card">
+    <h2>📚 知识库文档</h2>
+    <div class="row">
+      <input type="file" id="fileInput" multiple accept=".pdf,.doc,.docx,.md" style="font-size:13px">
+      <button onclick="uploadFiles()">上传并导入</button>
+      <button class="gray" onclick="loadDocuments()">刷新列表</button>
+    </div>
+    <div class="hint">支持 pdf / doc / docx / md，可多选。同名文档已存在时自动过滤。</div>
+    <div id="uploadResults"></div>
+    <div id="taskProgress" class="task-line"></div>
+    <div id="docTable"></div>
+    <h2 style="margin-top:16px">⏳ 导入任务（刷新页面也可见）</h2>
+    <div id="taskList"><div class="empty">加载中…</div></div>
+  </div>
+
+  <!-- 向量检索测试 -->
+  <div class="card">
+    <h2>🔍 向量检索测试</h2>
+    <div class="row">
+      <input type="text" id="searchQuery" placeholder="输入检索内容，如：量子加速器" style="flex:1">
+      <input type="number" id="searchTopK" value="5" min="1" max="20" style="width:70px" title="TopK">
+      <button onclick="doSearch()">检索</button>
+    </div>
+    <div class="hint">直接调用 POST /api/knowledge/search，返回最相似的切块与相似度得分。</div>
+    <div id="searchResults"></div>
+  </div>
+
+  <!-- AI 问答 -->
+  <div class="card full">
+    <h2>🤖 AI 问答（RAG，回答附带引用来源）</h2>
+    <textarea id="question" placeholder="例如：bge-m3 模型的向量维度是多少？"></textarea>
+    <div class="row">
+      <input type="number" id="chatTopK" value="8" min="1" max="20" style="width:70px" title="TopK">
+      <span class="hint">TopK：检索多少个切块作为上下文</span>
+      <button id="askBtn" onclick="doChat()">提问</button>
+    </div>
+    <div id="chatAnswer" class="answer" style="display:none"></div>
+    <div id="chatSources" class="sources"></div>
+    <div id="chatRefs"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ---------- 知识库：任务进度 ----------
+const statusMap = { Queued: ['排队中', 'b-warn'], Processing: ['导入中', 'b-warn'], Completed: ['完成', 'b-ok'], PartialFailed: ['部分失败', 'b-err'], Failed: ['失败', 'b-err'] };
+const fileStatusMap = { Pending: ['等待', 'b-warn'], Processing: ['处理中', 'b-warn'], Imported: ['导入成功', 'b-ok'], Skipped: ['已存在跳过', 'b-warn'], Failed: ['失败', 'b-err'] };
+
+function renderTask(t) {
+  const pct = t.totalFiles ? Math.round(t.processedFiles / t.totalFiles * 100) : 0;
+  const [label, cls] = statusMap[t.status] || [t.status, 'b-warn'];
+  let html = `<div class="task-line">任务 ${t.id.slice(0, 8)}…（${t.trigger === 'upload' ? '上传' : '启动扫描'} ${new Date(t.startedAt).toLocaleTimeString('zh-CN')}）：
+    <span class="badge ${cls}">${label}</span> ${t.processedFiles}/${t.totalFiles} 个文件（${pct}%）
+    <div class="progress"><div style="width:${pct}%"></div></div>`;
+  html += t.files.map(f => {
+    // 成功但带警告（如扫描件 0 切块）用黄色提示
+    const warn = f.status === 'Imported' && f.error;
+    const [l, c] = warn ? ['有警告', 'b-warn'] : (fileStatusMap[f.status] || [f.status, 'b-warn']);
+    return `<div style="margin-top:4px"><span class="badge ${c}">${l}</span>${f.fileName} ${f.chunkCount ? `（${f.chunkCount} 个切块，已可检索/提问）` : (f.status === 'Imported' ? '（0 个切块）' : '')} ${f.error ? `— ${f.error}` : ''}</div>`;
+  }).join('');
+  return html + '</div>';
+}
+
+// 任务面板：页面加载即显示所有任务，有进行中的任务时自动轮询
+let taskPollTimer = null;
+async function refreshTasks() {
+  const res = await fetch('/api/knowledge/tasks');
+  const tasks = await res.json();
+  $('taskList').innerHTML = tasks.length
+    ? tasks.map(renderTask).join('')
+    : '<div class="empty">还没有导入任务。</div>';
+  // 有进行中的任务时持续轮询并联动刷新文档列表
+  const hasActive = tasks.some(t => t.status === 'Queued' || t.status === 'Processing');
+  if (hasActive && !taskPollTimer) {
+    taskPollTimer = setInterval(async () => {
+      await refreshTasks();
+      await loadDocuments();
+    }, 2000);
+  } else if (!hasActive && taskPollTimer) {
+    clearInterval(taskPollTimer);
+    taskPollTimer = null;
+    loadDocuments();
+  }
+}
+
+// ---------- 知识库：上传 ----------
+async function uploadFiles() {
+  const input = $('fileInput');
+  if (!input.files.length) return alert('请先选择文件');
+  const fd = new FormData();
+  for (const f of input.files) fd.append('files', f);
+  $('uploadResults').innerHTML = '<span class="badge b-warn">上传中…</span>';
+  const res = await fetch('/api/knowledge/documents', { method: 'POST', body: fd });
+  const data = await res.json();
+  if (!res.ok) { $('uploadResults').innerHTML = `<span class="badge b-err">上传失败：${data.message || res.status}</span>`; return; }
+
+  $('uploadResults').innerHTML = data.results.map(r => {
+    const cls = r.status === 'accepted' ? 'b-ok' : (r.status === 'duplicate' ? 'b-warn' : 'b-err');
+    const label = r.status === 'accepted' ? '已受理，后台导入中' : r.status === 'duplicate' ? '已存在，被过滤' : '失败';
+    return `<span class="badge ${cls}">${r.fileName}：${label}</span>`;
+  }).join('');
+
+  refreshTasks(); // 任务面板会持续轮询直到导入完成
+}
+
+// ---------- 知识库：列表 ----------
+async function loadDocuments() {
+  const res = await fetch('/api/knowledge/documents');
+  const docs = await res.json();
+  if (!docs.length) { $('docTable').innerHTML = '<div class="empty">知识库还没有文档，先上传一个吧。</div>'; return; }
+  $('docTable').innerHTML = `<table>
+    <tr><th>文档名</th><th>切块数</th><th>大小</th><th>上传时间</th><th>操作</th></tr>
+    ${docs.map(d => `<tr>
+      <td>${d.fileName}</td><td>${d.chunkCount}</td>
+      <td>${(d.fileSize / 1024).toFixed(1)} KB</td>
+      <td>${d.uploadedAt ? new Date(d.uploadedAt).toLocaleString('zh-CN') : '—'}</td>
+      <td><button class="red" onclick="delDoc('${encodeURIComponent(d.documentId)}')">删除</button></td>
+    </tr>`).join('')}
+  </table>`;
+}
+
+async function delDoc(id) {
+  if (!confirm('确认删除该文档及其全部向量？')) return;
+  const res = await fetch(`/api/knowledge/documents/${id}`, { method: 'DELETE' });
+  if (res.status === 204) { loadDocuments(); }
+  else { const e = await res.json(); alert(e.message || '删除失败'); }
+}
+
+// ---------- 检索测试 ----------
+async function doSearch() {
+  const q = $('searchQuery').value.trim();
+  if (!q) return alert('请输入检索内容');
+  $('searchResults').innerHTML = '<span class="badge b-warn">检索中…</span>';
+  const res = await fetch('/api/knowledge/search', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: q, topK: +$('searchTopK').value || 5 })
+  });
+  const items = await res.json();
+  $('searchResults').innerHTML = items.length
+    ? items.map(r => `<div class="ref"><div class="meta">📄 ${r.fileName}${r.pageNumber ? ` · 第 ${r.pageNumber} 页` : ''} · 相似度 ${r.score.toFixed(4)}</div>${escapeHtml(r.text.slice(0, 300))}${r.text.length > 300 ? '…' : ''}</div>`).join('')
+    : '<div class="empty">没有命中任何内容。</div>';
+}
+
+// ---------- AI 问答 ----------
+async function doChat() {
+  const q = $('question').value.trim();
+  if (!q) return alert('请输入问题');
+  $('askBtn').disabled = true;
+  $('chatAnswer').style.display = 'block';
+  $('chatAnswer').textContent = '思考中…（向量检索 + 大模型生成，可能需要十几秒）';
+  $('chatSources').innerHTML = '';
+  $('chatRefs').innerHTML = '';
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q, topK: +$('chatTopK').value || 8 })
+    });
+    const data = await res.json();
+    if (!res.ok) { $('chatAnswer').textContent = data.message || `请求失败（${res.status}）`; return; }
+    // 回答来源徽标：知识库命中 or 大模型推理
+    const modeBadge = data.mode === 'model'
+      ? '<span class="badge b-warn">🤖 大模型推理（知识库未命中）</span>'
+      : '<span class="badge b-ok">📚 知识库回答</span>';
+    $('chatAnswer').innerHTML = modeBadge + '<br><br>' + escapeHtml(data.answer);
+    $('chatSources').innerHTML = data.sources.length
+      ? '引用来源：' + data.sources.map(s => `<span class="src">📄 ${s.fileName}${s.pageNumbers.length ? `（第 ${s.pageNumbers.join(', ')} 页）` : ''}</span>`).join('')
+      : '';
+    $('chatRefs').innerHTML = '<div class="hint" style="margin-top:10px">本次检索命中的切块：</div>' +
+      data.references.map(r => `<div class="ref"><div class="meta">📄 ${r.fileName}${r.pageNumber ? ` · 第 ${r.pageNumber} 页` : ''} · 相似度 ${r.score.toFixed(4)}</div>${escapeHtml(r.text.slice(0, 200))}${r.text.length > 200 ? '…' : ''}</div>`).join('');
+  } catch (e) {
+    $('chatAnswer').textContent = '请求异常：' + e.message;
+  } finally {
+    $('askBtn').disabled = false;
+  }
+}
+
+function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+loadDocuments();
+refreshTasks();
+</script>
+</body>
+</html>
