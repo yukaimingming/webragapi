@@ -213,3 +213,22 @@ public class ChatSource
     /// <summary>引用内容所在的页码（无页码概念时为空）</summary>
     public List<int> PageNumbers { get; set; } = [];
 }
+
+/// <summary>流式问答的 SSE 事件（POST /api/chat/stream，text/event-stream，每事件一行 data: JSON）</summary>
+public class ChatStreamEvent
+{
+    /// <summary>事件类型：meta=检索命中明细；mode=回答模式（解析到首行标记后立即推送）；delta=增量文本；end=结束（附最终完整数据）</summary>
+    public required string Type { get; set; }
+
+    /// <summary>回答模式（mode/end 事件携带）：knowledge_base / model</summary>
+    public string? Mode { get; set; }
+
+    /// <summary>增量文本（delta 事件携带）</summary>
+    public string? Text { get; set; }
+
+    /// <summary>检索命中的切块明细（meta 事件携带，mode=knowledge_base 时可作为引用展示）</summary>
+    public List<SearchResultItem>? References { get; set; }
+
+    /// <summary>按文档聚合的引用来源（end 事件携带，mode=knowledge_base 时有值）</summary>
+    public List<ChatSource>? Sources { get; set; }
+}

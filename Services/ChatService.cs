@@ -183,4 +183,158 @@ public class ChatService(
                     .Select(r => r.PageNumber!.Value).Distinct().OrderBy(v => v).ToList(),
             })
             .ToList();
+
+    // ================= 流式问答（SSE） =================
+
+    /// <summary>
+    /// 流式版问答：事件序列为 meta（检索命中）→ mode（解析到首行标记后立即推送）→ delta（增量文本）→ end（最终完整数据）。
+    /// 首行 [知识库]/[模型] 标记会先缓冲、解析并剥离，不会出现在推给前端的正文里。
+    /// </summary>
+    public async IAsyncEnumerable<ChatStreamEvent> ChatStreamAsync(
+        ChatRequest request, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        int topK = Math.Clamp(request.TopK <= 0 ? 8 : request.TopK, 1, 20);
+        bool allowModelAnswer = request.AllowModelAnswer ?? _allowModelAnswerDefault;
+
+        // 1. 检索并推送命中明细
+        var references = await semanticSearch.SearchWithScoreAsync(request.Question, request.DocumentId, topK);
+        yield return new ChatStreamEvent { Type = "meta", References = references };
+
+        string mode = "model";
+        var buffer = new System.Text.StringBuilder();        // 待推送的未决文本
+        var fullAnswer = new System.Text.StringBuilder();    // 完整回答（end 事件携带）
+
+        if (!allowModelAnswer)
+        {
+            // 严格 RAG 模式：不做标记协议，直接按知识库模式流式输出
+            mode = "knowledge_base";
+            yield return new ChatStreamEvent { Type = "mode", Mode = mode };
+
+            if (references.Count == 0)
+            {
+                var emptyText = "知识库中还没有找到与该问题相关的内容，也无法启用大模型推理（allowModelAnswer=false）。请先上传相关文档。";
+                yield return new ChatStreamEvent { Type = "delta", Text = emptyText };
+                yield return new ChatStreamEvent { Type = "end", Mode = mode, Text = emptyText, Sources = [], References = [] };
+                yield break;
+            }
+
+            var strictMessages = BuildMessages(StrictKnowledgeBasePrompt, references, request);
+            await foreach (var update in chatClient.GetStreamingResponseAsync(strictMessages, cancellationToken: cancellationToken))
+            {
+                var piece = update.Text;
+                if (string.IsNullOrEmpty(piece))
+                    continue;
+                buffer.Append(piece);
+                yield return new ChatStreamEvent { Type = "delta", Text = piece };
+            }
+
+            logger.LogInformation("RAG 流式问答完成（严格知识库模式）：问题='{Question}'。", request.Question);
+            yield return new ChatStreamEvent
+            {
+                Type = "end",
+                Mode = mode,
+                Text = buffer.ToString(),
+                Sources = AggregateSources(references),
+                References = references,
+            };
+            yield break;
+        }
+
+        // 2. 智慧病历模式：流式输出，先缓冲首行解析 [知识库]/[模型] 标记
+        var smartMessages = BuildMessages(SystemPrompt, references, request);
+        bool modeResolved = false;
+        await foreach (var update in chatClient.GetStreamingResponseAsync(smartMessages, cancellationToken: cancellationToken))
+        {
+            var piece = update.Text;
+            if (string.IsNullOrEmpty(piece))
+                continue;
+
+            buffer.Append(piece);
+
+            if (!modeResolved)
+            {
+                // 先跳过模型输出开头的前导空白（标记前常有空行），再找首行
+                var text = buffer.ToString().TrimStart();
+                if (text.Length == 0)
+                    continue;
+
+                int nl = text.IndexOf('\n');
+                if (nl >= 0)
+                {
+                    // 首行已完整：解析标记，标记行剥离后开始推增量
+                    mode = ResolveMode(text[..nl], references);
+                    modeResolved = true;
+                    yield return new ChatStreamEvent { Type = "mode", Mode = mode };
+
+                    var rest = text[(nl + 1)..].TrimStart();
+                    if (rest.Length > 0)
+                    {
+                        fullAnswer.Append(rest);
+                        yield return new ChatStreamEvent { Type = "delta", Text = rest };
+                    }
+                    // 注意：rest 已经推送过，缓冲区必须清空，否则下一块到来时 rest 会被重复推送
+                    buffer.Clear();
+                }
+                // 首行还没到换行：继续缓冲（防止标记被拆成多个增量块）
+            }
+            else if (buffer.Length > 0)
+            {
+                fullAnswer.Append(buffer);
+                yield return new ChatStreamEvent { Type = "delta", Text = buffer.ToString() };
+                buffer.Clear();
+            }
+        }
+
+        // 3. 流结束还没解析到标记：整段没有换行（短回答）或模型没按格式输出
+        if (!modeResolved)
+        {
+            var full = buffer.ToString().TrimStart();
+            int nl = full.IndexOf('\n');
+            var firstLine = nl >= 0 ? full[..nl] : full;
+            mode = ResolveMode(firstLine, references);
+            modeResolved = true;
+            yield return new ChatStreamEvent { Type = "mode", Mode = mode };
+
+            // 剥掉标记所在行，剩下的作为增量补推
+            var rest = nl >= 0 ? full[(nl + 1)..].TrimStart() : string.Empty;
+            if (rest.Length > 0)
+            {
+                fullAnswer.Append(rest);
+                yield return new ChatStreamEvent { Type = "delta", Text = rest };
+            }
+            buffer.Clear();
+        }
+
+        if (buffer.Length > 0)
+        {
+            fullAnswer.Append(buffer);
+            yield return new ChatStreamEvent { Type = "delta", Text = buffer.ToString() };
+        }
+
+        logger.LogInformation("RAG 流式问答完成（{Mode}）：问题='{Question}'，检索召回 {Count} 个切块。",
+            mode, request.Question, references.Count);
+        yield return new ChatStreamEvent
+        {
+            Type = "end",
+            Mode = mode,
+            Text = fullAnswer.ToString(), // 完整回答（前端也可以自己聚合 delta，这里作为兜底）
+            Sources = mode == "knowledge_base" ? AggregateSources(references) : [],
+            References = mode == "knowledge_base" ? references : [],
+        };
+    }
+
+    /// <summary>从首行解析回答模式标记；未按格式输出时按最高相似度兜底判定</summary>
+    private string ResolveMode(string firstLine, List<SearchResultItem> references)
+    {
+        var line = firstLine.Trim();
+        if (line.Contains(KnowledgeBaseMarker, StringComparison.Ordinal))
+            return "knowledge_base";
+        if (line.Contains(ModelMarker, StringComparison.Ordinal))
+            return "model";
+
+        var maxScore = references.Count > 0 ? references.Max(r => r.Score) : 0;
+        var fallback = maxScore >= 0.45 ? "knowledge_base" : "model";
+        logger.LogWarning("流式回答缺少模式标记，按相似度兜底判定为 {Mode}（最高分 {MaxScore}）。", fallback, maxScore);
+        return fallback;
+    }
 }

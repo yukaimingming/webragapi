@@ -195,34 +195,80 @@ async function doSearch() {
     : '<div class="empty">没有命中任何内容。</div>';
 }
 
-// ---------- AI 问答 ----------
+// ---------- AI 问答（SSE 流式） ----------
 async function doChat() {
   const q = $('question').value.trim();
   if (!q) return alert('请输入问题');
   $('askBtn').disabled = true;
   $('chatAnswer').style.display = 'block';
-  $('chatAnswer').textContent = '思考中…（向量检索 + 大模型生成，可能需要十几秒）';
+  $('chatAnswer').innerHTML = '<span class="badge b-warn">🔍 检索知识库中…</span>';
   $('chatSources').innerHTML = '';
   $('chatRefs').innerHTML = '';
+
+  let modeBadge = '';
+  let answerText = '';
+  let pending = Promise.resolve();
+  const render = () => { $('chatAnswer').innerHTML = (modeBadge ? modeBadge + '<br><br>' : '') + escapeHtml(answerText); };
+
   try {
-    const res = await fetch('/api/chat', {
+    const res = await fetch('/api/chat/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: q, topK: +$('chatTopK').value || 8 })
     });
-    const data = await res.json();
-    if (!res.ok) { $('chatAnswer').textContent = data.message || `请求失败（${res.status}）`; return; }
-    // 回答来源徽标：知识库命中 or 大模型推理
-    const modeBadge = data.mode === 'model'
-      ? '<span class="badge b-warn">🤖 大模型推理（知识库未命中）</span>'
-      : '<span class="badge b-ok">📚 知识库回答</span>';
-    $('chatAnswer').innerHTML = modeBadge + '<br><br>' + escapeHtml(data.answer);
-    $('chatSources').innerHTML = data.sources.length
-      ? '引用来源：' + data.sources.map(s => `<span class="src">📄 ${s.fileName}${s.pageNumbers.length ? `（第 ${s.pageNumbers.join(', ')} 页）` : ''}</span>`).join('')
-      : '';
-    $('chatRefs').innerHTML = '<div class="hint" style="margin-top:10px">本次检索命中的切块：</div>' +
-      data.references.map(r => `<div class="ref"><div class="meta">📄 ${r.fileName}${r.pageNumber ? ` · 第 ${r.pageNumber} 页` : ''} · 相似度 ${r.score.toFixed(4)}</div>${escapeHtml(r.text.slice(0, 200))}${r.text.length > 200 ? '…' : ''}</div>`).join('');
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      $('chatAnswer').textContent = e.message || `请求失败（${res.status}）`;
+      return;
+    }
+
+    // 解析 SSE 流（data: {...}\n\n 帧）
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let sse = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sse += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = sse.indexOf('\n\n')) >= 0) {
+        const frame = sse.slice(0, idx);
+        sse = sse.slice(idx + 2);
+        const line = frame.split('\n').find(l => l.startsWith('data: '));
+        if (!line) continue;
+        const evt = JSON.parse(line.slice(6));
+
+        if (evt.type === 'meta') {
+          // 检索完成，等待模型首字（此时还不知道最终模式）
+          pending = pending.then(() => { $('chatAnswer').innerHTML = '<span class="badge b-warn">🧠 模型生成中…</span>'; });
+        } else if (evt.type === 'mode') {
+          modeBadge = evt.mode === 'model'
+            ? '<span class="badge b-warn">🤖 大模型推理（知识库未命中）</span>'
+            : '<span class="badge b-ok">📚 知识库回答</span>';
+        } else if (evt.type === 'delta') {
+          answerText += evt.text || '';
+          pending = pending.then(render);
+        } else if (evt.type === 'end') {
+          if (!modeBadge) {
+            modeBadge = evt.mode === 'model'
+              ? '<span class="badge b-warn">🤖 大模型推理（知识库未命中）</span>'
+              : '<span class="badge b-ok">📚 知识库回答</span>';
+          }
+          // 以服务端 end 事件的完整文本为准（防丢块）
+          if (evt.text) { answerText = evt.text; }
+          $('chatSources').innerHTML = evt.sources?.length
+            ? '引用来源：' + evt.sources.map(s => `<span class="src">📄 ${s.fileName}${s.pageNumbers.length ? `（第 ${s.pageNumbers.join(', ')} 页）` : ''}</span>`).join('')
+            : '';
+          $('chatRefs').innerHTML = evt.references?.length
+            ? '<div class="hint" style="margin-top:10px">本次检索命中的切块：</div>' +
+              evt.references.map(r => `<div class="ref"><div class="meta">📄 ${r.fileName}${r.pageNumber ? ` · 第 ${r.pageNumber} 页` : ''} · 相似度 ${r.score.toFixed(4)}</div>${escapeHtml((r.text || '').slice(0, 200))}${(r.text || '').length > 200 ? '…' : ''}</div>`).join('')
+            : '';
+        }
+      }
+    }
+    await pending;
+    render();
   } catch (e) {
-    $('chatAnswer').textContent = '请求异常：' + e.message;
+    $('chatAnswer').innerHTML = (modeBadge ? modeBadge + '<br><br>' : '') + escapeHtml(answerText) + '<br><br>⚠️ 请求异常：' + escapeHtml(e.message);
   } finally {
     $('askBtn').disabled = false;
   }
