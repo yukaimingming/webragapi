@@ -171,9 +171,20 @@ public class ChatService(
         return answer.Text ?? string.Empty;
     }
 
-    /// <summary>来源按文档聚合（去重，附页码列表）</summary>
+    /// <summary>
+    /// 来源按文档聚合（去重，附页码列表）。
+    /// 只取与最高分切块接近的文档作为回答依据（分差 ≤0.15 且分数 ≥0.5）：
+    /// 向量检索召回的 top-K 里常混有低分的无关文档（同类中文文本基线相似度不低），
+    /// 它们只是"凑数"命中，不能算作回答依据。
+    /// </summary>
     private static List<ChatSource> AggregateSources(List<SearchResultItem> references)
-        => references
+    {
+        if (references.Count == 0)
+            return [];
+
+        var cutoff = Math.Max(0.5, references.Max(r => r.Score) - 0.15);
+        return references
+            .Where(r => r.Score >= cutoff)
             .GroupBy(r => r.DocumentId)
             .Select(g => new ChatSource
             {
@@ -183,6 +194,7 @@ public class ChatService(
                     .Select(r => r.PageNumber!.Value).Distinct().OrderBy(v => v).ToList(),
             })
             .ToList();
+    }
 
     // ================= 流式问答（SSE） =================
 
