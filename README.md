@@ -36,13 +36,29 @@ dotnet run
 
 | 接口 | 方法 | 作用 |
 | ---- | ---- | ---- |
-| `/api/chat` | POST | AI 问答 + 返回引用来源 |
+| `/api/chat` | POST | AI 问答 + 返回引用来源（一次性返回完整 JSON） |
+| `/api/chat/stream` | POST | AI 问答流式版（SSE，`text/event-stream`） |
 | `/api/knowledge/documents` | POST | 上传文档（pdf/doc/docx/md，多文件） |
 | `/api/knowledge/documents` | GET | 获取知识库文档列表 |
 | `/api/knowledge/documents/{id}` | GET | 查看文档详情（含切块预览） |
 | `/api/knowledge/documents/{id}` | DELETE | 删除文档及其向量 |
+| `/api/knowledge/tasks` | GET | 列出最近的导入任务（含进行中的） |
 | `/api/knowledge/tasks/{id}` | GET | 查询文档导入进度 |
 | `/api/knowledge/search` | POST | 直接测试向量检索 |
+
+### 流式问答事件格式（/api/chat/stream）
+
+请求体与 `/api/chat` 完全相同，响应为 SSE，每个事件一行 `data: {JSON}`：
+
+```
+data: {"type":"meta","references":[...]}      # 检索命中明细（含相似度得分）
+data: {"type":"mode","mode":"knowledge_base"} # 回答模式（解析到模型首行标记后立即推送）
+data: {"type":"delta","text":"高血压的"}       # 增量文本（多条）
+data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"references":[...]}
+```
+
+前端用 `fetch` + `ReadableStream` 读取（`EventSource` 只支持 GET）；`references`/`sources` 中，
+`sources` 只含与最高分切块接近的真正回答依据（分差 ≤0.15 且分数 ≥0.5），`references` 保留完整召回列表供调试。
 
 ## 行为说明
 
@@ -52,6 +68,7 @@ dotnet run
   - 请求参数 `allowModelAnswer: false` 可退回严格 RAG（只答知识库内容）。
 - **增量导入**：上传与启动扫描都只导入知识库中没有的新文档，同名文档自动过滤（按 Qdrant 中 `documentid` 精确匹配）。
 - **无需重启**：上传后后台异步导入（返回 taskId 可查进度），导入完成后立即可被检索/问答，不用重启服务。
+- **流式输出**：Demo 页问答走 `/api/chat/stream`（SSE），打字机效果，回答模式徽标在首行标记解析后立即显示。
 - **导入任务面板**：`GET /api/knowledge/tasks` 列出最近任务；0 切块的文档（如扫描件 PDF，暂不支持 OCR）会在任务明细中给出警告。
 - **文档目录**：`App_Data/Documents`（相对项目根目录，可在 `appsettings.json` 的 `Knowledge:DocumentsPath` 修改）。
 - **切块策略**：语义切块（SemanticSimilarityChunker），每块 ≤1024 token、重叠 50 token。
@@ -72,6 +89,10 @@ dotnet run
 | 阿里云百炼 DashScope | `https://dashscope.aliyuncs.com/compatible-mode/v1` | DashScope Key | `qwen-plus` 等 |
 
 `Chat:RewriteFinishReason` 保持 `true` 即可（对标准服务是纯透传，只在响应带空 `finish_reason` 时才改写）。
+
+**API Key 不入库**：本仓库的 `appsettings.json` 中 `Chat:ApiKey` 为空占位。开发环境执行
+`dotnet user-secrets set "Chat:ApiKey" "你的Key"`（本机已配置）；生产环境用环境变量
+`Chat__ApiKey` 或 `appsettings.Production.json` 提供，服务启动时缺失会直接报错提示。
 
 注意：向量模型（Ollama bge-m3）与聊天模型相互独立；**已入库的向量与聊天模型无关**，换聊天模型不需要重新导入文档。
 另外，`[知识库]`/`[模型]` 模式标记依赖模型遵循提示词格式的能力，主流 14B 以上模型都没问题；
