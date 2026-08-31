@@ -54,8 +54,21 @@ var chatClientOptions = new OpenAIClientOptions
 };
 var chatOpenAIClient = new OpenAIClient(new ApiKeyCredential(chatApiKey), chatClientOptions);
 
-// 注册聊天客户端（RAG 问答生成）
+// 注册聊天客户端（RAG 问答生成，保留 OpenAI 兼容客户端）
 builder.Services.AddChatClient(chatOpenAIClient.GetChatClient(chatModelName).AsIChatClient());
+
+// 病历助手 / RAG 生成统一走商汤 HTTP 客户端（可传 reasoning_effort / thinking）
+builder.Services.AddHttpClient("SenseNova", client =>
+{
+    client.Timeout = Timeout.InfiniteTimeSpan;
+}).ConfigurePrimaryHttpMessageHandler(() =>
+{
+    HttpMessageHandler inner = new HttpClientHandler();
+    return rewriteFinishReason
+        ? new FinishReasonRewriteHandler { InnerHandler = inner }
+        : inner;
+});
+builder.Services.AddSingleton<SenseNovaCompletionService>();
 
 // ---------- 向量模型：本地 Ollama 的 bge-m3（配置复用 AIChatApp 项目） ----------
 var ollamaEndpoint = builder.Configuration["Ollama:Endpoint"] ?? "http://localhost:11434/v1";
@@ -79,7 +92,7 @@ builder.Services.AddSingleton(new QdrantClient(qdrantHost, qdrantPort, https: fa
 
 // ---------- RAG 核心服务 ----------
 // 问答策略配置（强类型 Options 模式）
-builder.Services.Configure<ChatOptions>(builder.Configuration.GetSection(AiChatOptions.SectionName));
+builder.Services.Configure<AiChatOptions>(builder.Configuration.GetSection(AiChatOptions.SectionName));
 // 1. 数据导入器：扫描上传目录，解析文档，生成向量并入库
 builder.Services.AddSingleton<DataIngestor>();
 //2. 导入任务管理器：后台执行导入任务，提供任务状态查询

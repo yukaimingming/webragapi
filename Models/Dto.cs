@@ -178,6 +178,12 @@ public class ChatRequest
 
     /// <summary>历史对话（可选，多轮问答时传入）</summary>
     public List<ChatHistoryMessage>? History { get; set; }
+
+    /// <summary>是否开启深度思考。关闭时后端向商汤传 reasoning_effort=none</summary>
+    public bool? Thinking { get; set; }
+
+    /// <summary>推理等级：low / medium / high。thinking=false 时忽略</summary>
+    public string? ReasoningEffort { get; set; }
 }
 
 /// <summary>多轮对话的历史消息</summary>
@@ -217,7 +223,7 @@ public class ChatSource
 /// <summary>流式问答的 SSE 事件（POST /api/chat/stream，text/event-stream，每事件一行 data: JSON）</summary>
 public class ChatStreamEvent
 {
-    /// <summary>事件类型：meta=检索命中明细；mode=回答模式（解析到首行标记后立即推送）；delta=增量文本；end=结束（附最终完整数据）</summary>
+    /// <summary>事件类型：meta=检索命中明细；mode=回答模式；reasoning=思考过程增量；delta=增量文本；end=结束</summary>
     public required string Type { get; set; }
 
     /// <summary>回答模式（mode/end 事件携带）：knowledge_base / model</summary>

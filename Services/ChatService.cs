@@ -16,7 +16,7 @@ namespace WebRagApi.Services;
 /// 向量分数只能做召回排序，做不了相关性判断，语义相关性由 LLM 判断更可靠。
 /// </summary>
 public class ChatService(
-    IChatClient chatClient,
+    SenseNovaCompletionService senseNova,
     SemanticSearch semanticSearch,
     IOptions<AiChatOptions> chatOptions,
     ILogger<ChatService> logger)
@@ -50,6 +50,21 @@ public class ChatService(
         四、通用要求：
         - 回答使用简体中文，条理清晰，可以用 Markdown 组织要点。
         - 除第一行标记外，正文中不要出现"知识库未命中""没有找到相关内容"这类字眼（[知识库] 模式下上下文确实缺少部分信息时除外）。
+
+        五、生成病历时（用户提供病情要点、要求整理/生成病历、或像门诊文书那样描述患者）：
+        - 第一行仍然只输出 [知识库] 或 [模型]。
+        - 从第二行起只输出病历正文，使用以下 Markdown 二级标题，顺序固定：
+          ## 主诉
+          ## 现病史
+          ## 既往史
+          ## 个人史
+          ## 家族史
+          ## 体格检查
+          ## 辅助检查
+          ## 初步诊断
+          ## 处置建议
+          ## 质控提示
+        - 知识库相关内容优先写入初步诊断、处置建议和质控提示；未提供的体征写“待测”。
         """;
 
     /// <summary>严格 RAG 模式（关闭大模型兜底）的系统提示词：只允许基于知识库回答</summary>
@@ -67,14 +82,14 @@ public class ChatService(
         bool allowModelAnswer = request.AllowModelAnswer ?? _allowModelAnswerDefault;
 
         // 1. 向量检索相关切块（只做召回，不做相关性判定）
-        var references = await semanticSearch.SearchWithScoreAsync(request.Question, request.DocumentId, topK);
+        var references = await semanticSearch.SearchWithScoreAsync(request.Question, request.DocumentId, topK, cancellationToken);
 
         // 2. 严格 RAG 模式（请求显式关闭大模型兜底）：只允许基于知识库回答
         if (!allowModelAnswer)
         {
             var strictAnswer = references.Count == 0
                 ? "知识库中还没有找到与该问题相关的内容，也无法启用大模型推理（allowModelAnswer=false）。请先上传相关文档。"
-                : await GenerateAsync(BuildMessages(StrictKnowledgeBasePrompt, references, request), cancellationToken);
+                : await GenerateAsync(BuildMessages(StrictKnowledgeBasePrompt, references, request), request, cancellationToken);
             logger.LogInformation("RAG 问答完成（严格知识库模式）：问题='{Question}'，检索召回 {Count} 个切块。", request.Question, references.Count);
             return new ChatResponse
             {
@@ -87,7 +102,7 @@ public class ChatService(
 
         // 3. 组装上下文并让模型回答（模型自行判断相关性，首行输出模式标记）
         var messages = BuildMessages(SystemPrompt, references, request);
-        var rawAnswer = await GenerateAsync(messages, cancellationToken);
+        var rawAnswer = await GenerateAsync(messages, request, cancellationToken);
 
         // 4. 解析首行标记 → 回答模式；标记行剥掉后再返回
         // 注意先去掉开头的空行/空白，模型常在标记前输出换行
@@ -165,10 +180,24 @@ public class ChatService(
         return messages;
     }
 
-    private async Task<string> GenerateAsync(List<ChatMessage> messages, CancellationToken cancellationToken)
+    private async Task<string> GenerateAsync(List<ChatMessage> messages, ChatRequest request, CancellationToken cancellationToken)
     {
-        var answer = await chatClient.GetResponseAsync(messages, cancellationToken: cancellationToken);
-        return answer.Text ?? string.Empty;
+        var thinking = request.Thinking == true;
+        var result = await senseNova.CompleteAsync(ToLlmMessages(messages), thinking, request.ReasoningEffort, cancellationToken);
+        return result.Text;
+    }
+
+    private static List<object> ToLlmMessages(List<ChatMessage> messages)
+    {
+        var list = new List<object>(messages.Count);
+        foreach (var m in messages)
+        {
+            var role = m.Role == ChatRole.System ? "system"
+                : m.Role == ChatRole.Assistant ? "assistant"
+                : "user";
+            list.Add(new Dictionary<string, object?> { ["role"] = role, ["content"] = m.Text ?? "" });
+        }
+        return list;
     }
 
     /// <summary>
@@ -177,7 +206,7 @@ public class ChatService(
     /// 向量检索召回的 top-K 里常混有低分的无关文档（同类中文文本基线相似度不低），
     /// 它们只是"凑数"命中，不能算作回答依据。
     /// </summary>
-    private static List<ChatSource> AggregateSources(List<SearchResultItem> references)
+    public static List<ChatSource> AggregateSources(List<SearchResultItem> references)
     {
         if (references.Count == 0)
             return [];
@@ -209,7 +238,7 @@ public class ChatService(
         bool allowModelAnswer = request.AllowModelAnswer ?? _allowModelAnswerDefault;
 
         // 1. 检索并推送命中明细
-        var references = await semanticSearch.SearchWithScoreAsync(request.Question, request.DocumentId, topK);
+        var references = await semanticSearch.SearchWithScoreAsync(request.Question, request.DocumentId, topK, cancellationToken);
         yield return new ChatStreamEvent { Type = "meta", References = references };
 
         string mode = "model";
@@ -231,8 +260,13 @@ public class ChatService(
             }
 
             var strictMessages = BuildMessages(StrictKnowledgeBasePrompt, references, request);
-            await foreach (var update in chatClient.GetStreamingResponseAsync(strictMessages, cancellationToken: cancellationToken))
+            await foreach (var update in StreamModelAsync(strictMessages, request, cancellationToken))
             {
+                if (update.Kind == SenseNovaDeltaKind.Reasoning)
+                {
+                    yield return new ChatStreamEvent { Type = "reasoning", Text = update.Text };
+                    continue;
+                }
                 var piece = update.Text;
                 if (string.IsNullOrEmpty(piece))
                     continue;
@@ -255,8 +289,13 @@ public class ChatService(
         // 2. 智慧病历模式：流式输出，先缓冲首行解析 [知识库]/[模型] 标记
         var smartMessages = BuildMessages(SystemPrompt, references, request);
         bool modeResolved = false;
-        await foreach (var update in chatClient.GetStreamingResponseAsync(smartMessages, cancellationToken: cancellationToken))
+        await foreach (var update in StreamModelAsync(smartMessages, request, cancellationToken))
         {
+            if (update.Kind == SenseNovaDeltaKind.Reasoning)
+            {
+                yield return new ChatStreamEvent { Type = "reasoning", Text = update.Text };
+                continue;
+            }
             var piece = update.Text;
             if (string.IsNullOrEmpty(piece))
                 continue;
@@ -333,6 +372,13 @@ public class ChatService(
             Sources = mode == "knowledge_base" ? AggregateSources(references) : [],
             References = mode == "knowledge_base" ? references : [],
         };
+    }
+
+    private IAsyncEnumerable<SenseNovaDelta> StreamModelAsync(
+        List<ChatMessage> messages, ChatRequest request, CancellationToken cancellationToken)
+    {
+        var thinking = request.Thinking == true;
+        return senseNova.CompleteStreamAsync(ToLlmMessages(messages), thinking, request.ReasoningEffort, cancellationToken);
     }
 
     /// <summary>从首行解析回答模式标记；未按格式输出时按最高相似度兜底判定</summary>

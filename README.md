@@ -38,6 +38,7 @@ dotnet run
 | ---- | ---- | ---- |
 | `/api/chat` | POST | AI 问答 + 返回引用来源（一次性返回完整 JSON） |
 | `/api/chat/stream` | POST | AI 问答流式版（SSE，`text/event-stream`） |
+| `/api/chat/config` | GET | 公开模型能力（不含 API Key） |
 | `/api/knowledge/documents` | POST | 上传文档（pdf/doc/docx/md，多文件） |
 | `/api/knowledge/documents` | GET | 获取知识库文档列表 |
 | `/api/knowledge/documents/{id}` | GET | 查看文档详情（含切块预览） |
@@ -56,6 +57,10 @@ data: {"type":"mode","mode":"knowledge_base"} # 回答模式（解析到模型�
 data: {"type":"delta","text":"高血压的"}       # 增量文本（多条）
 data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"references":[...]}
 ```
+
+请求体可带 `thinking`（是否深度思考）与 `reasoningEffort`（`low` / `medium` / `high`）。关闭思考时向商汤传 `reasoning_effort: "none"`。
+
+`mode=knowledge_base` 时 `sources` 为按文档聚合的引用（页码）；`mode=model` 时来源为空。
 
 前端用 `fetch` + `ReadableStream` 读取（`EventSource` 只支持 GET）；`references`/`sources` 中，
 `sources` 只含与最高分切块接近的真正回答依据（分差 ≤0.15 且分数 ≥0.5），`references` 保留完整召回列表供调试。

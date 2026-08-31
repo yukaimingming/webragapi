@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -8,7 +9,7 @@ using WebRagApi.Services;
 namespace WebRagApi.Controllers;
 
 /// <summary>
-/// AI 问答接口：基于知识库的 RAG 问答，返回回答与引用来源。
+/// AI 问答接口：基于知识库的 RAG 问答（一次性 JSON 与 SSE 流式）。
 /// </summary>
 [ApiController]
 [Route("api/chat")]
@@ -20,6 +21,20 @@ public class ChatController(ChatService chatService) : ControllerBase
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
+
+    /// <summary>前端可公开读取的模型能力（不含 API Key / Endpoint）</summary>
+    [HttpGet("config")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    public IActionResult Config([FromServices] IOptions<AiChatOptions> options)
+    {
+        var cfg = options.Value;
+        return Ok(new
+        {
+            model = cfg.Model,
+            thinkingSupported = true,
+            reasoningEfforts = new[] { "low", "medium", "high" }
+        });
+    }
 
     /// <summary>
     /// AI 问答：先做向量检索找相关内容，再由大模型生成回答并返回引用来源（一次性返回完整 JSON）。
@@ -59,6 +74,7 @@ public class ChatController(ChatService chatService) : ControllerBase
         var buffer = new StringBuilder();
         await foreach (var evt in chatService.ChatStreamAsync(request, cancellationToken))
         {
+            buffer.Append("event: ").Append(evt.Type).Append('\n');
             buffer.Append("data: ").Append(JsonSerializer.Serialize(evt, SseJsonOptions)).Append("\n\n");
             await Response.WriteAsync(buffer.ToString(), cancellationToken);
             await Response.Body.FlushAsync(cancellationToken);

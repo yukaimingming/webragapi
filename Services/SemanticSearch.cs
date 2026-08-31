@@ -15,10 +15,11 @@ public class SemanticSearch(
     QdrantClient qdrantClient)
 {
     /// <summary>带相似度得分的向量检索（供 /api/knowledge/search 与 chat 引用来源使用）</summary>
-    public async Task<List<SearchResultItem>> SearchWithScoreAsync(string text, string? documentIdFilter, int maxResults)
+    public async Task<List<SearchResultItem>> SearchWithScoreAsync(
+        string text, string? documentIdFilter, int maxResults, CancellationToken cancellationToken = default)
     {
         // 1. 查询文本向量化
-        var embedding = await embeddingGenerator.GenerateAsync(text);
+        var embedding = await embeddingGenerator.GenerateAsync(text, cancellationToken: cancellationToken);
         var vector = embedding.Vector.ToArray();
 
         // 2. 可选：限定只在某个文档内检索
@@ -32,7 +33,8 @@ public class SemanticSearch(
                 QdrantChunkWriter.CollectionName,
                 vector,
                 filter: filter,
-                limit: (ulong)maxResults);
+                limit: (ulong)maxResults,
+                cancellationToken: cancellationToken);
         }
         catch (Grpc.Core.RpcException ex) when (ex.StatusCode == Grpc.Core.StatusCode.NotFound)
         {
