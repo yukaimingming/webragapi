@@ -11,7 +11,7 @@
 | .NET 10 SDK | `net10.0` |
 | Docker Desktop | 运行 Qdrant（见下方启动命令） |
 | Ollama | 需已拉取 `bge-m3:567m` 向量模型（1024 维） |
-| 商汤 SenseNova API Key | 配置在 `appsettings.json` 的 `SenseNova:Key` |
+| 商汤 SenseNova API Key | `dotnet user-secrets set "Chat:ApiKey" "你的Key"`（不要写进仓库） |
 
 ### 启动 Qdrant
 
@@ -49,16 +49,34 @@ dotnet run
 
 ### 流式问答事件格式（/api/chat/stream）
 
-请求体与 `/api/chat` 完全相同，响应为 SSE，每个事件一行 `data: {JSON}`：
+请求体与 `/api/chat` 相同，可额外带深度思考参数：
+
+```json
+{
+  "question": "高血压管理指南",
+  "history": [],
+  "topK": 8,
+  "thinking": true,
+  "reasoningEffort": "medium"
+}
+```
+
+响应为 SSE（`event:` + `data: {JSON}`）：
 
 ```
+event: meta
 data: {"type":"meta","references":[...]}      # 检索命中明细（含相似度得分）
+event: reasoning
+data: {"type":"reasoning","text":"..."}       # 思考过程增量（thinking=true 时）
+event: mode
 data: {"type":"mode","mode":"knowledge_base"} # 回答模式（解析到模型首行标记后立即推送）
-data: {"type":"delta","text":"高血压的"}       # 增量文本（多条）
+event: delta
+data: {"type":"delta","text":"高血压的"}       # 正文增量（多条）
+event: end
 data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"references":[...]}
 ```
 
-请求体可带 `thinking`（是否深度思考）与 `reasoningEffort`（`low` / `medium` / `high`）。关闭思考时向商汤传 `reasoning_effort: "none"`。
+`thinking=false` 时向商汤传 `reasoning_effort: "none"`，不推 `reasoning` 事件。
 
 `mode=knowledge_base` 时 `sources` 为按文档聚合的引用（页码）；`mode=model` 时来源为空。
 
@@ -73,7 +91,7 @@ data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"referenc
   - 请求参数 `allowModelAnswer: false` 可退回严格 RAG（只答知识库内容）。
 - **增量导入**：上传与启动扫描都只导入知识库中没有的新文档，同名文档自动过滤（按 Qdrant 中 `documentid` 精确匹配）。
 - **无需重启**：上传后后台异步导入（返回 taskId 可查进度），导入完成后立即可被检索/问答，不用重启服务。
-- **流式输出**：Demo 页问答走 `/api/chat/stream`（SSE），打字机效果，回答模式徽标在首行标记解析后立即显示。
+- **流式输出**：Demo 页与悬浮助手都走 `/api/chat/stream`（SSE）。悬浮助手（AI-Emr-Floating-Assistant）不再直连商汤。
 - **导入任务面板**：`GET /api/knowledge/tasks` 列出最近任务；0 切块的文档（如扫描件 PDF，暂不支持 OCR）会在任务明细中给出警告。
 - **文档目录**：`App_Data/Documents`（相对项目根目录，可在 `appsettings.json` 的 `Knowledge:DocumentsPath` 修改）。
 - **切块策略**：语义切块（SemanticSimilarityChunker），每块 ≤1024 token、重叠 50 token。
@@ -111,4 +129,6 @@ data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"referenc
 - .doc（97-2003 二进制格式）解析：自研 `BinaryDocReader`（OpenMcdf 读 OLE 流 + 解析 piece table），
   不依赖本机 Office。
 - 商汤接口返回空 `finish_reason` 的问题由 `FinishReasonRewriteHandler` 在 HTTP 层改写（复用 AIChatApp）。
+- 深度思考按商汤 OpenAI 兼容协议发送 `reasoning_effort`；开启时另附 `thinking.type=enabled`。思考内容识别 `delta.reasoning` / `delta.reasoning_content`。
 - Ollama 大批量 embedding 会压垮 runner，`BatchingEmbeddingGenerator` 自动拆小批（复用 AIChatApp）。
+- 对话接口只有 `/api/chat` 与 `/api/chat/stream`（另有 `/api/chat/config` 返回公开模型能力）。知识库管理接口见上表，不要删。
