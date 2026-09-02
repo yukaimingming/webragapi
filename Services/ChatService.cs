@@ -102,6 +102,7 @@ public class ChatService(
 
         // 3. 组装上下文并让模型回答（模型自行判断相关性，首行输出模式标记）
         var messages = BuildMessages(SystemPrompt, references, request);
+        // 生成 
         var rawAnswer = await GenerateAsync(messages, request, cancellationToken);
 
         // 4. 解析首行标记 → 回答模式；标记行剥掉后再返回
@@ -180,6 +181,13 @@ public class ChatService(
         return messages;
     }
 
+    /// <summary>
+    /// 调用商汤 Nova 生成回答（一次性返回完整文本）。
+    /// </summary>
+    /// <param name="messages"></param>
+    /// <param name="request"></param>
+    /// <param name="cancellationToken"></param>
+    /// <returns></returns>
     private async Task<string> GenerateAsync(List<ChatMessage> messages, ChatRequest request, CancellationToken cancellationToken)
     {
         var thinking = request.Thinking == true;

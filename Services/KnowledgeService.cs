@@ -87,6 +87,7 @@ public class KnowledgeService(
         {
             try
             {
+                // 直接调用 DataIngestor 导入文件，导入过程中实时更新 task.Files 的状态
                 await dataIngestor.IngestFilesAsync(task, DocumentsDirectory, task.Files);
                 FinishTask(task);
             }

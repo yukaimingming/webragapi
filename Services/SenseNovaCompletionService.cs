@@ -71,6 +71,17 @@ public class SenseNovaCompletionService(
         return new SenseNovaCompletionResult { Text = text.ToString(), Reasoning = reasoning.ToString() };
     }
 
+
+    /// <summary>
+    /// 调用商汤 SenseNova 流式接口，按事件推送增量文本与 reasoning。
+    /// 事件序列：delta.reasoning / delta.reasoning_content → delta.content。
+    /// </summary>
+    /// <param name="messages">提示词</param>
+    /// <param name="thinking">是否推理</param>
+    /// <param name="reasoningEffort">推理等级</param>
+    /// <param name="cancellationToken">取消令牌</param>
+    /// <returns></returns>
+    /// <exception cref="InvalidOperationException"></exception>
     public async IAsyncEnumerable<SenseNovaDelta> CompleteStreamAsync(
         IReadOnlyList<object> messages,
         bool thinking,
@@ -133,6 +144,7 @@ public class SenseNovaCompletionService(
                 continue;
             }
 
+            //读取推理内容
             var think = ExtractReasoning(json);
             if (thinking && !string.IsNullOrEmpty(think))
             {
@@ -146,6 +158,7 @@ public class SenseNovaCompletionService(
                 }
             }
 
+            //读取最后内容
             var content = ExtractContent(json);
             if (!string.IsNullOrEmpty(content))
             {

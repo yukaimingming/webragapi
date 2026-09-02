@@ -67,8 +67,13 @@ public class IngestionTask
 /// <summary>单个文件的导入进度明细</summary>
 public class IngestionFileProgress
 {
+    /// <summary>上传的文件名</summary>
     public required string FileName { get; set; }
+
+    /// <summary>文档标识（即文件名）</summary>
     public required string DocumentId { get; set; }
+
+    /// <summary>文件大小（字节）</summary>
     public IngestionFileStatus Status { get; set; } = IngestionFileStatus.Pending;
 
     /// <summary>成功导入后生成的切块数量</summary>

@@ -93,16 +93,19 @@ public class DataIngestor(
         {
             // bge-m3 支持 8192 上下文，1024 兼顾检索精度和超长元素（如大表格）的容纳能力
             MaxTokensPerChunk = 1024,
+            // 50 token 重叠，保证跨页/跨段的语义连续性
             OverlapTokens = 50
         };
 
+        
+        //解析文档和切块：DocumentReader → SemanticSimilarityChunker → QdrantChunkWriter
         using var pipeline = new IngestionPipeline<string>(
             reader: new DocumentReader(directory),
             chunker: new SemanticSimilarityChunker(embeddingGenerator, chunkerOptions),
             writer: writer,
             loggerFactory: loggerFactory);
 
-        // 逐文件处理并上报进度（pipeline 每完成一个文档 yield 一次结果）
+        // 处理结果回写进度对象：成功/失败/跳过 + 切块数量 + 错误信息
         await foreach (var result in pipeline.ProcessAsync(newFiles))
         {
             var progress = files.FirstOrDefault(f => f.DocumentId == result.DocumentId);
@@ -157,6 +160,7 @@ public class DataIngestor(
     {
         try
         {
+            // Qdrant 计数接口返回的数量 > 0 表示已存在该文档
             var count = await qdrantClient.CountAsync(QdrantChunkWriter.CollectionName, filter: DocumentFilter(documentId));
             return count > 0;
         }
