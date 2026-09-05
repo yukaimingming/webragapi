@@ -1,13 +1,33 @@
 using System.ClientModel;
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.AI;
 using OpenAI;
 using Qdrant.Client;
 using Scalar.AspNetCore;
+using Serilog;
 using WebRagApi.Models;
 using WebRagApi.Services;
 using WebRagApi.Services.Ingestion;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Serilog 同时保留控制台输出，并将所有 ILogger<T> 日志按天写入应用目录下的 logs 文件夹。
+// 文件日志包含异常堆栈，便于定位模型接口、向量库和文档解析等依赖异常。
+var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+Directory.CreateDirectory(logDirectory);
+builder.Host.UseSerilog((_, loggerConfiguration) => loggerConfiguration
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft.AspNetCore", Serilog.Events.LogEventLevel.Warning)
+    .MinimumLevel.Override("Qdrant.Client", Serilog.Events.LogEventLevel.Warning)
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .WriteTo.File(
+        Path.Combine(logDirectory, "webragapi-.log"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        shared: true,
+        encoding: System.Text.Encoding.UTF8,
+        outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}] [{Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}"));
 
 // ---------- 控制器与 API 文档 ----------
 // 枚举（任务/文件状态等）序列化为字符串，接口返回更易读
@@ -93,6 +113,8 @@ builder.Services.AddSingleton(new QdrantClient(qdrantHost, qdrantPort, https: fa
 // ---------- RAG 核心服务 ----------
 // 问答策略配置（强类型 Options 模式）
 builder.Services.Configure<AiChatOptions>(builder.Configuration.GetSection(AiChatOptions.SectionName));
+// 客户端自动更新清单；版本、下载地址和开关由 Update 配置节控制。
+builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.SectionName));
 // 1. 数据导入器：扫描上传目录，解析文档，生成向量并入库
 builder.Services.AddSingleton<DataIngestor>();
 //2. 导入任务管理器：后台执行导入任务，提供任务状态查询
@@ -124,6 +146,12 @@ app.UseCors();
 app.UseDefaultFiles(); // wwwroot/index.html 作为首页（网页验证 demo）
 app.UseStaticFiles();
 app.MapControllers();
+
+// 启动横幅：同时写入控制台和 Serilog 本地文件，便于确认 AI 接口服务已正常运行。
+Log.Information("服务启动：Services Running...");
+Log.Information(
+    "运行环境：AI接口服务正在运行!!! 请勿随意关闭接口服务，避免造成数据丢失!!! Powered by {FrameworkDescription} 强力驱动 on Kestrel",
+    RuntimeInformation.FrameworkDescription);
 
 // ---------- 启动时扫描上传目录，自动导入尚未入库的新文档 ----------
 // 已存在的文档会被自动过滤，因此服务重启不会重复导入；

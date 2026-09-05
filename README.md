@@ -132,3 +132,43 @@ data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"referenc
 - 深度思考按商汤 OpenAI 兼容协议发送 `reasoning_effort`；开启时另附 `thinking.type=enabled`。思考内容识别 `delta.reasoning` / `delta.reasoning_content`。
 - Ollama 大批量 embedding 会压垮 runner，`BatchingEmbeddingGenerator` 自动拆小批（复用 AIChatApp）。
 - 对话接口只有 `/api/chat` 与 `/api/chat/stream`（另有 `/api/chat/config` 返回公开模型能力）。知识库管理接口见上表，不要删。
+
+## 客户端自动更新
+
+WebAPI 提供客户端更新清单接口，WPF 和 Win32 使用不同的平台参数，避免下载错误的客户端包：
+
+```text
+GET /api/update/manifest?platform=win-x64&channel=stable
+GET /api/update/manifest?platform=win32-x64&channel=stable
+```
+
+更新包直接放在 `wwwroot/updates` 下，由 WebAPI 以静态 ZIP 文件提供下载。服务器不需要解压更新包；客户端负责下载、校验 SHA256、解压到临时目录并替换本地 EXE 和前端文件。客户端本机的 `appsettings.json` 会保留，不会被更新包覆盖。
+
+生产环境配置示例：
+
+```json
+{
+  "Update": {
+    "Enabled": true,
+    "LatestVersion": "1.0.2",
+    "MinSupportedVersion": "1.0.0",
+    "PackageUrl": "https://你的服务器域名/updates/release-wpf-1.0.2.zip",
+    "Sha256": "最终 ZIP 的 SHA256",
+    "ForceUpdate": false,
+    "ReleaseNotes": "更新说明",
+    "Win32": {
+      "Enabled": true,
+      "LatestVersion": "1.0.2",
+      "MinSupportedVersion": "1.0.0",
+      "PackageUrl": "https://你的服务器域名/updates/release-win32-1.0.2.zip",
+      "Sha256": "Win32 ZIP 的 SHA256",
+      "ForceUpdate": false,
+      "ReleaseNotes": "更新说明"
+    }
+  }
+}
+```
+
+每次重新压缩 ZIP 后都必须重新计算 SHA256。Windows 服务器可双击执行 [`scripts/一键生成更新包SHA256.cmd`](scripts/一键生成更新包SHA256.cmd)，脚本会自动选择 `wwwroot/updates` 中最新的 ZIP，显示哈希并复制到剪贴板；也可以把指定 ZIP 拖到脚本上。
+
+生产环境的客户端清单地址和 ZIP 地址必须使用医院服务器的实际域名或内网 IP，不能使用 `127.0.0.1`。更新包根目录应直接包含 `AiEmrAssistant.exe`、`AiEmrAssistant.Updater.exe`、`version.json` 和 `runtime` 等文件，不能再套一层目录。
