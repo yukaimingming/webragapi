@@ -142,7 +142,26 @@ GET /api/update/manifest?platform=win-x64&channel=stable
 GET /api/update/manifest?platform=win32-x64&channel=stable
 ```
 
-更新包直接放在 `wwwroot/updates` 下，由 WebAPI 以静态 ZIP 文件提供下载。服务器不需要解压更新包；客户端负责下载、校验 SHA256、解压到临时目录并替换本地 EXE 和前端文件。客户端本机的 `appsettings.json` 会保留，不会被更新包覆盖。
+更新包直接放在 `wwwroot/updates` 下，由 WebAPI 以静态 ZIP 文件提供下载。服务器不需要解压更新包；客户端负责下载、校验 SHA256、备份旧文件、解压替换并在失败时自动回滚旧版本。客户端本机的 `appsettings.json` 与 `prompts.json`（医生维护的科室模板）都不会被更新包覆盖。
+
+### 接口行为（2026-09 优化）
+
+- **无可用更新返回 200 空清单**，不再是 404：`{"latestVersion":"","packageUrl":""}`。客户端据此静默跳过，不会在每次启动时弹“更新失败”；接口同时返回 `Cache-Control: no-store`，禁止中间层缓存清单。
+- **相对下载地址自动补全**：`PackageUrl` 可以只写 `/updates/xxx.zip`，接口按当前请求的协议和域名补全为绝对地址（客户端不支持相对路径）。
+- **更新包文件存在性校验**：返回清单前先检查 ZIP 是否真的存在于 `wwwroot/updates`；文件缺失时同样返回空清单并写警告日志（`更新包文件不存在：...`），避免客户端拿到 404 的下载地址报“更新失败”。
+- `MinSupportedVersion` / `ForceUpdate` / `ReleaseNotes` 仍随清单下发；当前版本客户端暂未使用强制更新语义，仅保留字段。
+
+### 客户端更新包打包（推荐）
+
+助手仓库提供一键打包脚本，自动排除运行日志、pdb、WebView2 用户数据等垃圾文件，把版本号注入包内 `version.json`（防止清单版本与包版本不一致导致客户端反复更新），默认不打包 Updater（其有变更时加 `-IncludeUpdater`）：
+
+```powershell
+# 在 AI-Emr-Floating-Assistant 仓库执行
+powershell -ExecutionPolicy Bypass -File scripts\make-update-package.ps1 -Platform wpf -Version 1.0.2
+powershell -ExecutionPolicy Bypass -File scripts\make-update-package.ps1 -Platform win32 -Version 1.0.2
+```
+
+输出在助手仓库 `publish\update-packages\`，脚本会直接打印 SHA256 和可粘贴的 `Update` / `Update:Win32` 配置。把 ZIP 拷入本服务 `wwwroot\updates` 后按打印内容更新配置并重启 WebAPI。
 
 生产环境配置示例：
 
@@ -169,6 +188,6 @@ GET /api/update/manifest?platform=win32-x64&channel=stable
 }
 ```
 
-每次重新压缩 ZIP 后都必须重新计算 SHA256。Windows 服务器可双击执行 [`scripts/一键生成更新包SHA256.cmd`](scripts/一键生成更新包SHA256.cmd)，脚本会自动选择 `wwwroot/updates` 中最新的 ZIP，显示哈希并复制到剪贴板；也可以把指定 ZIP 拖到脚本上。
+每次重新压缩 ZIP 后都必须重新计算 SHA256（用上面的打包脚本会自动输出）。Windows 服务器也可双击执行 [`scripts/一键生成更新包SHA256.cmd`](scripts/一键生成更新包SHA256.cmd)，脚本会自动选择 `wwwroot/updates` 中最新的 ZIP，显示哈希并复制到剪贴板；也可以把指定 ZIP 拖到脚本上。
 
-生产环境的客户端清单地址和 ZIP 地址必须使用医院服务器的实际域名或内网 IP，不能使用 `127.0.0.1`。更新包根目录应直接包含 `AiEmrAssistant.exe`、`AiEmrAssistant.Updater.exe`、`version.json` 和 `runtime` 等文件，不能再套一层目录。
+生产环境的客户端清单地址和 ZIP 地址必须使用医院服务器的实际域名或内网 IP，不能使用 `127.0.0.1`。更新包根目录应直接包含 `AiEmrAssistant.exe`、`version.json` 和 `runtime` 等文件，不能再套一层目录；`AiEmrAssistant.Updater.exe` 默认可不进包（客户端已有即可用，需要更新 Updater 本身时再加 `-IncludeUpdater` 重新打包）。注意 Updater 必须保持"纯压缩单文件"构建，不要开 `PublishTrimmed`——实测裁剪后的单文件会被 Windows Defender 误报"病毒或垃圾软件"（错误 225）并隔离。
