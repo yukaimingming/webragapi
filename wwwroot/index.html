@@ -54,11 +54,11 @@
   <div class="card">
     <h2>📚 知识库文档</h2>
     <div class="row">
-      <input type="file" id="fileInput" multiple accept=".pdf,.doc,.docx,.md" style="font-size:13px">
+      <input type="file" id="fileInput" multiple accept=".pdf,.doc,.docx,.md,.png,.jpg,.jpeg,.tif,.tiff,.bmp" style="font-size:13px">
       <button onclick="uploadFiles()">上传并导入</button>
       <button class="gray" onclick="loadDocuments()">刷新列表</button>
     </div>
-    <div class="hint">支持 pdf / doc / docx / md，可多选。同名文档已存在时自动过滤。</div>
+    <div class="hint">支持 pdf / doc / docx / md，以及扫描件 png/jpg/jpeg。扫描件 PDF 无文字层时自动 OCR。可多选，同名文档已存在时自动过滤。</div>
     <div id="uploadResults"></div>
     <div id="taskProgress" class="task-line"></div>
     <div id="docTable"></div>
@@ -68,13 +68,18 @@
 
   <!-- 向量检索测试 -->
   <div class="card">
-    <h2>🔍 向量检索测试</h2>
+    <h2>🔍 检索测试</h2>
     <div class="row">
-      <input type="text" id="searchQuery" placeholder="输入检索内容，如：量子加速器" style="flex:1">
+      <input type="text" id="searchQuery" placeholder="输入检索内容，如：量子比特 / 张阿三" style="flex:1">
       <input type="number" id="searchTopK" value="5" min="1" max="20" style="width:70px" title="TopK">
+      <select id="searchMode" style="font-size:13px;padding:6px 8px;border:1px solid #d0d7de;border-radius:6px">
+        <option value="vector">仅向量</option>
+        <option value="hybrid">向量+BM25+RRF</option>
+        <option value="rerank" selected>RRF+Cross-Encoder 重排</option>
+      </select>
       <button onclick="doSearch()">检索</button>
     </div>
-    <div class="hint">直接调用 POST /api/knowledge/search，返回最相似的切块与相似度得分。</div>
+    <div class="hint">POST /api/knowledge/search。精确词（人名、药名）看 BM25/RRF；语义问题看向量。问答默认走重排。</div>
     <div id="searchResults"></div>
   </div>
 
@@ -84,7 +89,7 @@
     <textarea id="question" placeholder="例如：bge-m3 模型的向量维度是多少？"></textarea>
     <div class="row">
       <input type="number" id="chatTopK" value="8" min="1" max="20" style="width:70px" title="TopK">
-      <span class="hint">TopK：检索多少个切块作为上下文</span>
+      <span class="hint">TopK：检索多少个切块作为上下文。知识库里已有的文档（含非医疗）会按文档回答；只有知识库答不了且问题也不是医疗时，才会提示范围限制。</span>
       <button id="askBtn" onclick="doChat()">提问</button>
     </div>
     <div id="chatAnswer" class="answer" style="display:none"></div>
@@ -187,11 +192,17 @@ async function doSearch() {
   $('searchResults').innerHTML = '<span class="badge b-warn">检索中…</span>';
   const res = await fetch('/api/knowledge/search', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: q, topK: +$('searchTopK').value || 5 })
+    body: JSON.stringify({ query: q, topK: +$('searchTopK').value || 5, mode: $('searchMode').value })
   });
   const items = await res.json();
   $('searchResults').innerHTML = items.length
-    ? items.map(r => `<div class="ref"><div class="meta">📄 ${r.fileName}${r.pageNumber ? ` · 第 ${r.pageNumber} 页` : ''} · 相似度 ${r.score.toFixed(4)}</div>${escapeHtml(r.text.slice(0, 300))}${r.text.length > 300 ? '…' : ''}</div>`).join('')
+    ? items.map(r => {
+        const extra = [
+          r.vectorScore != null ? `向量 ${r.vectorScore.toFixed(3)}` : null,
+          r.bm25Score != null ? `BM25 ${r.bm25Score.toFixed(3)}` : null
+        ].filter(Boolean).join(' · ');
+        return `<div class="ref"><div class="meta">📄 ${r.fileName}${r.pageNumber ? ` · 第 ${r.pageNumber} 页` : ''} · 得分 ${r.score.toFixed(4)}${extra ? ` · ${extra}` : ''}</div>${escapeHtml(r.text.slice(0, 300))}${r.text.length > 300 ? '…' : ''}</div>`;
+      }).join('')
     : '<div class="empty">没有命中任何内容。</div>';
 }
 

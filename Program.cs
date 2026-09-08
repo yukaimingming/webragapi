@@ -8,6 +8,7 @@ using Serilog;
 using WebRagApi.Models;
 using WebRagApi.Services;
 using WebRagApi.Services.Ingestion;
+using WebRagApi.Services.Retrieval;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -115,6 +116,10 @@ builder.Services.AddSingleton(new QdrantClient(qdrantHost, qdrantPort, https: fa
 builder.Services.Configure<AiChatOptions>(builder.Configuration.GetSection(AiChatOptions.SectionName));
 // 客户端自动更新清单；版本、下载地址和开关由 Update 配置节控制。
 builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(UpdateOptions.SectionName));
+// 混合检索：内存 BM25 + RRF 融合 + Cross-Encoder 形态重排（默认问答/检索走 rerank）
+builder.Services.Configure<RetrievalOptions>(builder.Configuration.GetSection(RetrievalOptions.SectionName));
+builder.Services.AddSingleton<Bm25Index>();
+builder.Services.AddSingleton<CrossEncoderReranker>();
 // 1. 数据导入器：扫描上传目录，解析文档，生成向量并入库
 builder.Services.AddSingleton<DataIngestor>();
 //2. 导入任务管理器：后台执行导入任务，提供任务状态查询

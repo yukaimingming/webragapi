@@ -150,14 +150,21 @@ public class SearchRequest
 
     /// <summary>可选：限定只在某个文档内检索</summary>
     public string? DocumentId { get; set; }
+
+    /// <summary>vector=仅向量；hybrid=向量+BM25+RRF；rerank=hybrid后再重排。空则用配置默认值</summary>
+    public string? Mode { get; set; }
 }
 
-/// <summary>向量检索单条结果</summary>
+/// <summary>检索单条结果</summary>
 public class SearchResultItem
 {
+    public string? ChunkId { get; set; }
     public required string DocumentId { get; set; }
     public required string FileName { get; set; }
+    /// <summary>最终排序分（向量余弦 / RRF / 重排分，取决于 mode）</summary>
     public double Score { get; set; }
+    public double? VectorScore { get; set; }
+    public double? Bm25Score { get; set; }
     public required string Text { get; set; }
     public string? Context { get; set; }
     public int? PageNumber { get; set; }

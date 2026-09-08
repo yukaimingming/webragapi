@@ -4,6 +4,7 @@ using Microsoft.Extensions.DataIngestion.Chunkers;
 using Microsoft.ML.Tokenizers;
 using Qdrant.Client;
 using WebRagApi.Models;
+using WebRagApi.Services.Retrieval;
 
 namespace WebRagApi.Services.Ingestion;
 
@@ -16,7 +17,8 @@ public class DataIngestor(
     ILogger<DataIngestor> logger,
     ILoggerFactory loggerFactory,
     IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator,
-    QdrantClient qdrantClient)
+    QdrantClient qdrantClient,
+    Bm25Index bm25Index)
 {
     // 与 DocxReader 的 cl100k 分词保持一致
     private static readonly Tokenizer Tokenizer = TiktokenTokenizer.CreateForModel("gpt-3.5-turbo");
@@ -100,7 +102,7 @@ public class DataIngestor(
         
         //解析文档和切块：DocumentReader → SemanticSimilarityChunker → QdrantChunkWriter
         using var pipeline = new IngestionPipeline<string>(
-            reader: new DocumentReader(directory),
+            reader: new DocumentReader(directory, loggerFactory),
             chunker: new SemanticSimilarityChunker(embeddingGenerator, chunkerOptions),
             writer: writer,
             loggerFactory: loggerFactory);
@@ -115,9 +117,9 @@ public class DataIngestor(
             if (result.Succeeded)
             {
                 var chunkCount = await CountChunksAsync(progress.DocumentId);
-                // 成功但 0 切块：通常是扫描件/图片型 PDF，没有文字层可解析
+                // 成功但 0 切块：文字层与 OCR 都没有得到可用内容
                 string? warning = chunkCount == 0
-                    ? "成功但解析到 0 个切块——该文件没有可提取的文本（可能是扫描件/图片型 PDF，暂不支持 OCR），无法被检索和提问"
+                    ? "成功但解析到 0 个切块——文本提取与 OCR 均未得到可用内容，无法被检索和提问"
                     : null;
                 MarkFile(progress, IngestionFileStatus.Imported, warning, chunkCount);
                 logger.LogWarning("文档 '{id}' 导入完成，共 {Count} 个切块。{Warning}", result.DocumentId, chunkCount, warning ?? "");
@@ -128,6 +130,10 @@ public class DataIngestor(
                 logger.LogWarning("文档 '{id}' 导入失败：{Reason}", result.DocumentId, result.Exception?.Message);
             }
         }
+
+        // 有新切块入库后让 BM25 倒排失效，下次检索再从 Qdrant 重建
+        if (files.Any(f => f.Status == IngestionFileStatus.Imported))
+            bm25Index.MarkDirty();
     }
 
     /// <summary>把处理结果写回进度对象，并推进任务级计数</summary>

@@ -3,6 +3,7 @@ using Qdrant.Client;
 using Qdrant.Client.Grpc;
 using WebRagApi.Models;
 using WebRagApi.Services.Ingestion;
+using WebRagApi.Services.Retrieval;
 
 namespace WebRagApi.Services;
 
@@ -17,7 +18,8 @@ public class KnowledgeService(
     DataIngestor dataIngestor,
     IngestionTaskManager taskManager,
     IHostEnvironment environment,
-    IConfiguration configuration)
+    IConfiguration configuration,
+    Bm25Index bm25Index)
 {
     /// <summary>上传文档存放目录（相对于项目根目录，默认 App_Data/Documents）</summary>
     public DirectoryInfo DocumentsDirectory { get; } =
@@ -59,7 +61,7 @@ public class KnowledgeService(
                     FileName = safeName,
                     DocumentId = safeName,
                     Status = IngestionFileStatus.Failed,
-                    Error = $"不支持的文件类型 '{ext}'，仅支持 pdf/doc/docx/md",
+                    Error = $"不支持的文件类型 '{ext}'，仅支持 pdf/doc/docx/md 以及扫描件 png/jpg/jpeg/tif/tiff/bmp",
                 });
                 continue;
             }
@@ -237,6 +239,8 @@ public class KnowledgeService(
             logger.LogWarning(ex, "文档 '{DocumentId}' 的向量已删除，但磁盘源文件删除失败（可能被占用）。", documentId);
         }
 
+        // 向量已删，BM25 倒排也要重建，否则还会搜到已删文档
+        bm25Index.MarkDirty();
         logger.LogInformation("文档 '{DocumentId}' 已删除（{Count} 个切块）。", documentId, chunkCount);
         return true;
     }

@@ -13,7 +13,8 @@ namespace WebRagApi.Controllers;
 public class KnowledgeController(KnowledgeService knowledgeService, SemanticSearch semanticSearch, IngestionTaskManager taskManager) : ControllerBase
 {
     /// <summary>
-    /// 上传文档（支持 pdf / doc / docx / md，可多文件）。
+    /// 上传文档（支持 pdf / doc / docx / md，以及扫描件 png/jpg/jpeg/tif/tiff/bmp，可多文件）。
+    /// 无文字层的扫描件 PDF / 图片会自动 OCR。
     /// 同名文档已在知识库中的会被自动过滤；上传后后台异步导入，用返回的 taskId 查询进度。
     /// </summary>
     [HttpPost("documents")]
@@ -77,7 +78,8 @@ public class KnowledgeController(KnowledgeService knowledgeService, SemanticSear
     public IActionResult ListTasks() => Ok(taskManager.List());
 
     /// <summary>
-    /// 直接测试向量检索：把查询文本向量化后返回最相似的切块（带相似度得分）。
+    /// 检索测试：默认向量 + BM25 + RRF，再 Cross-Encoder 重排。
+    /// mode=vector 仅向量；hybrid 融合两路；rerank 融合后再重排。
     /// </summary>
     [HttpPost("search")]
     [ProducesResponseType(typeof(List<SearchResultItem>), StatusCodes.Status200OK)]
@@ -88,7 +90,7 @@ public class KnowledgeController(KnowledgeService knowledgeService, SemanticSear
             return BadRequest(new { message = "查询内容不能为空。" });
 
         int topK = Math.Clamp(request.TopK <= 0 ? 5 : request.TopK, 1, 50);
-        var results = await semanticSearch.SearchWithScoreAsync(request.Query, request.DocumentId, topK);
+        var results = await semanticSearch.SearchWithScoreAsync(request.Query, request.DocumentId, topK, request.Mode);
         return Ok(results);
     }
 }

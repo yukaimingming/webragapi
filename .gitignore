@@ -15,5 +15,8 @@ App_Data/
 # 临时文件
 *.log
 
+# Tesseract 英文模型当前未使用（OCR 只用 chi_sim），不入库
+tessdata/eng.traineddata
+
 # 客户端更新包体积较大，生产环境由文件服务器或 WebAPI 静态目录提供，不提交到 Git。
 wwwroot/updates/*.zip

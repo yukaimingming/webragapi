@@ -39,13 +39,13 @@ dotnet run
 | `/api/chat` | POST | AI 问答 + 返回引用来源（一次性返回完整 JSON） |
 | `/api/chat/stream` | POST | AI 问答流式版（SSE，`text/event-stream`） |
 | `/api/chat/config` | GET | 公开模型能力（不含 API Key） |
-| `/api/knowledge/documents` | POST | 上传文档（pdf/doc/docx/md，多文件） |
+| `/api/knowledge/documents` | POST | 上传文档（pdf/doc/docx/md，扫描件 png/jpg/jpeg/tif/bmp，多文件） |
 | `/api/knowledge/documents` | GET | 获取知识库文档列表 |
 | `/api/knowledge/documents/{id}` | GET | 查看文档详情（含切块预览） |
 | `/api/knowledge/documents/{id}` | DELETE | 删除文档及其向量 |
 | `/api/knowledge/tasks` | GET | 列出最近的导入任务（含进行中的） |
 | `/api/knowledge/tasks/{id}` | GET | 查询文档导入进度 |
-| `/api/knowledge/search` | POST | 直接测试向量检索 |
+| `/api/knowledge/search` | POST | 检索（默认向量+BM25+RRF+重排；`mode=vector/hybrid/rerank`） |
 
 ### 流式问答事件格式（/api/chat/stream）
 
@@ -86,16 +86,62 @@ data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"referenc
 ## 行为说明
 
 - **问答策略（智慧病历模式）**：检索到的切块始终交给大模型，由模型判断语义相关性后二选一——
-  - 知识库内容与问题真正相关 → 基于知识库回答，返回引用来源（响应 `mode = "knowledge_base"`）；
-  - 不相关（注意：领域相同 ≠ 相关，模型判断比相似度阈值可靠）→ 医疗健康问题由大模型基于自身医学知识直接推理（`mode = "model"`），非医疗问题礼貌拒答。
+  - 知识库内容与问题真正相关 → 基于知识库回答，返回引用来源（响应 `mode = "knowledge_base"`）。用户上传的公文、教材等非医疗文档只要能回答该问题，同样走知识库，不得以“只能问医疗”拒绝。
+  - 不相关（注意：领域相同 ≠ 相关，模型判断比相似度阈值可靠）→ 医疗健康问题由大模型基于自身医学知识直接推理（`mode = "model"`）；知识库也答不了的非医疗问题才礼貌拒答。
   - 请求参数 `allowModelAnswer: false` 可退回严格 RAG（只答知识库内容）。
 - **增量导入**：上传与启动扫描都只导入知识库中没有的新文档，同名文档自动过滤（按 Qdrant 中 `documentid` 精确匹配）。
 - **无需重启**：上传后后台异步导入（返回 taskId 可查进度），导入完成后立即可被检索/问答，不用重启服务。
 - **流式输出**：Demo 页与悬浮助手都走 `/api/chat/stream`（SSE）。悬浮助手（AI-Emr-Floating-Assistant）不再直连商汤。
-- **导入任务面板**：`GET /api/knowledge/tasks` 列出最近任务；0 切块的文档（如扫描件 PDF，暂不支持 OCR）会在任务明细中给出警告。
+- **导入任务面板**：`GET /api/knowledge/tasks` 列出最近任务；文本提取与 OCR 都得不到内容时，会在任务明细中给出 0 切块警告。
+- **扫描件 OCR**：无文字层的 PDF 页会自动用本地 Tesseract（`chi_sim` 简体中文）识别；png/jpg/jpeg/tif/bmp 图片扫描件同样走 OCR。有文字层的 PDF 仍抽文字，不 OCR。模型文件在 `tessdata/chi_sim.traineddata`。识别率不是 100%（印刷体中文常见错字，如药名形近字），目前未接 PaddleOCR。
 - **文档目录**：`App_Data/Documents`（相对项目根目录，可在 `appsettings.json` 的 `Knowledge:DocumentsPath` 修改）。
 - **切块策略**：语义切块（SemanticSimilarityChunker），每块 ≤1024 token、重叠 50 token。
+- **检索管道**：见下方「检索管道（向量 + BM25 + RRF + 重排）」。
 - **模型**：聊天 `sensenova-6.8-flash-lite`（商汤）；向量 `bge-m3:567m`（本地 Ollama，1024 维，余弦相似度）。
+
+## 检索管道（向量 + BM25 + RRF + 重排）
+
+问答和 Demo 检索默认走完整管道，不再只做单一向量检索：
+
+```text
+查询
+  ├─ 向量召回（Qdrant + bge-m3 余弦）
+  └─ BM25 召回（内存倒排，中文单字+二字 + 拉丁词）
+        ↓
+     RRF 按名次融合（不比较分数量纲）
+        ↓
+     Cross-Encoder 形态重排（query 与切块成对打分）
+        ↓
+     截断 TopK → 问答上下文 / 检索结果
+```
+
+三个组件的关系：
+
+| 组件 | 作用 | 是否必须一起 |
+| ---- | ---- | ---- |
+| BM25 | 词法检索，对人名、药名、文号更准 | 可单独召回，但要和向量拼在一起才有「混合检索」 |
+| RRF | 按排名融合多路结果 | **不能单独用**，至少要两路（向量 + BM25） |
+| Cross-Encoder 重排 | 融合后再对 (问题, 切块) 成对打分 | 可后加；当前默认打开 |
+
+`POST /api/knowledge/search` 的 `mode`：
+
+```json
+{ "query": "高血压急症", "topK": 5, "mode": "rerank" }
+```
+
+| mode | 行为 |
+| ---- | ---- |
+| `vector` | 仅 Qdrant 向量（旧行为） |
+| `hybrid` | 向量 + BM25，RRF 融合 |
+| `rerank` | hybrid 后再重排（默认；问答也走这个） |
+
+Demo 页检索区可切换三种模式，结果里会带最终得分，以及可选的 `vectorScore` / `bm25Score`。
+
+配置在 `appsettings.json` 的 `Retrieval` 节：`DefaultMode`、`CandidateMultiplier`（每路多取几倍候选）、`RrfK`（RRF 常数，常用 60）。
+
+**关于 bge-reranker**：当前重排是 Cross-Encoder **形态**（成对打分），用覆盖率、短语命中、向量分、BM25 分加权，**尚未加载 BAAI `bge-reranker-base` / `bge-reranker-v2-m3` 神经网络权重**。要换成真正的 bge-reranker 需再部署 ONNX（或其它本地推理）和模型文件。
+
+**引用与同领域文档**：接口 `sources` 只保留与最高分接近的切块（分差 ≤0.15 且分数 ≥0.5）。TopK 里其它同领域文档（例如问「高血压急症」时召回的《高血压管理指南》）仍会进入模型上下文，模型可能在正文末尾一并写出；这是「召回宽、引用窄」的现有策略，不是检索算错。
 
 ## 切换聊天模型（生产部署）
 
@@ -126,6 +172,8 @@ data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"referenc
 - 导入管道：`Microsoft.Extensions.DataIngestion`（解析 → 语义切块），
   写入器为自定义 `QdrantChunkWriter`（绕开 SK Qdrant 连接器仅支持 Guid/ulong 键的限制，
   同时把文件元数据直接补写进 Qdrant payload，免维护额外元数据库）。
+- 扫描件 PDF：先 PdfPig 抽文字层；字太少再 OCR 页内大图，再不行整页渲染后 OCR（`PdfPigReader` + `TesseractOcr`）。
+- 混合检索：`Bm25Index` 从 Qdrant payload 建内存倒排（导入/删除后下次检索重建）；`ReciprocalRankFusion` 融合向量与 BM25；`CrossEncoderReranker` 成对重排。不改 Qdrant 集合结构，已有向量可继续用。
 - .doc（97-2003 二进制格式）解析：自研 `BinaryDocReader`（OpenMcdf 读 OLE 流 + 解析 piece table），
   不依赖本机 Office。
 - 商汤接口返回空 `finish_reason` 的问题由 `FinishReasonRewriteHandler` 在 HTTP 层改写（复用 AIChatApp）。
