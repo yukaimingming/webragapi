@@ -28,9 +28,9 @@ docker run -d --name webrag-qdrant -p 6333:6333 -p 6334:6334 \
 dotnet run
 ```
 
-- 服务地址：<http://localhost:5229>
-- 接口文档（Scalar）：<http://localhost:5229/scalar>
-- 网页验证 Demo：<http://localhost:5229/>（wwwroot/index.html）
+- 服务地址：<http://localhost:5000>（`launchSettings.json` 的 http 配置；部分文档仍写 5229）
+- 接口文档（Scalar）：<http://localhost:5000/scalar>（接口说明来自控制器 XML 注释）
+- 网页验证 Demo：<http://localhost:5000/>（`wwwroot/index.html`，Element Plus）
 
 ## 接口一览
 
@@ -89,7 +89,8 @@ data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"referenc
   - 知识库内容与问题真正相关 → 基于知识库回答，返回引用来源（响应 `mode = "knowledge_base"`）。用户上传的公文、教材等非医疗文档只要能回答该问题，同样走知识库，不得以“只能问医疗”拒绝。
   - 不相关（注意：领域相同 ≠ 相关，模型判断比相似度阈值可靠）→ 医疗健康问题由大模型基于自身医学知识直接推理（`mode = "model"`）；知识库也答不了的非医疗问题才礼貌拒答。
   - 请求参数 `allowModelAnswer: false` 可退回严格 RAG（只答知识库内容）。
-- **增量导入**：上传与启动扫描都只导入知识库中没有的新文档，同名文档自动过滤（按 Qdrant 中 `documentid` 精确匹配）。
+- **增量导入**：按**文件内容 SHA256** 去重（写入 Qdrant payload 的 `contenthash`）。内容相同即使文件名不同也会跳过；同名但字节变了会删除旧向量再导入。列表/删除仍用文件名当 `documentid`。
+- **批量入库**：本批待导入文件先全部解析切块，再按 `Knowledge:ChunkWriteBatchSize`（默认 32）跨文件批量 embedding 并 Upsert Qdrant；Ollama 再按 `Ollama:BatchSize`（默认 16）拆小批。
 - **无需重启**：上传后后台异步导入（返回 taskId 可查进度），导入完成后立即可被检索/问答，不用重启服务。
 - **流式输出**：Demo 页与悬浮助手都走 `/api/chat/stream`（SSE）。悬浮助手（AI-Emr-Floating-Assistant）不再直连商汤。
 - **导入任务面板**：`GET /api/knowledge/tasks` 列出最近任务；文本提取与 OCR 都得不到内容时，会在任务明细中给出 0 切块警告。
@@ -143,6 +144,14 @@ Demo 页检索区可切换三种模式，结果里会带最终得分，以及可
 
 **引用与同领域文档**：接口 `sources` 只保留与最高分接近的切块（分差 ≤0.15 且分数 ≥0.5）。TopK 里其它同领域文档（例如问「高血压急症」时召回的《高血压管理指南》）仍会进入模型上下文，模型可能在正文末尾一并写出；这是「召回宽、引用窄」的现有策略，不是检索算错。
 
+## Demo 页（wwwroot/index.html）
+
+首页用 Vue 3 + Element Plus。功能与接口一致：拖拽上传、文档列表（含文档名）、导入任务轮询、三种检索模式、SSE 问答。问答卡片标题栏右侧有「发送」按钮（Ctrl+Enter 也可发）。CDN 加载 unpkg 上的 Vue / Element Plus。
+
+## Scalar 接口文档
+
+`/scalar` 读取 `/openapi/v1.json`。项目开启了 `GenerateDocumentationFile`，控制器与 DTO 的 XML 注释会进入 OpenAPI（分组：AI 问答 / 知识库 / 客户端更新）。文档标题为 WebRag API。
+
 ## 切换聊天模型（生产部署）
 
 聊天模型走 **OpenAI 兼容协议**，DeepSeek、Qwen、本地 Ollama、vLLM 等全部兼容，
@@ -174,6 +183,8 @@ Demo 页检索区可切换三种模式，结果里会带最终得分，以及可
   同时把文件元数据直接补写进 Qdrant payload，免维护额外元数据库）。
 - 扫描件 PDF：先 PdfPig 抽文字层；字太少再 OCR 页内大图，再不行整页渲染后 OCR（`PdfPigReader` + `TesseractOcr`）。
 - 混合检索：`Bm25Index` 从 Qdrant payload 建内存倒排（导入/删除后下次检索重建）；`ReciprocalRankFusion` 融合向量与 BM25；`CrossEncoderReranker` 成对重排。不改 Qdrant 集合结构，已有向量可继续用。
+- 导入入库：本批文件先全部解析切块，再按 `Knowledge:ChunkWriteBatchSize`（默认 32）批量 embedding 并 Upsert Qdrant；Ollama 侧还会按 `Ollama:BatchSize`（默认 16）再拆小批。不再「一个文件向量化完再处理下一个」。
+- OpenAPI / Scalar：控制器 XML 注释（`summary` / `remarks` / `response`）生成接口说明；`AddOpenApi` 写入文档标题与简介。
 - .doc（97-2003 二进制格式）解析：自研 `BinaryDocReader`（OpenMcdf 读 OLE 流 + 解析 piece table），
   不依赖本机 Office。
 - 商汤接口返回空 `finish_reason` 的问题由 `FinishReasonRewriteHandler` 在 HTTP 层改写（复用 AIChatApp）。

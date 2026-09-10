@@ -4,23 +4,33 @@ using WebRagApi.Models;
 
 namespace WebRagApi.Controllers;
 
-/// <summary>客户端自动更新清单接口。</summary>
+/// <summary>客户端自动更新：返回 WPF / Win32 可用的最新包清单。</summary>
+/// <remarks>
+/// 未开启更新或包文件不存在时返回空清单（latestVersion 为空），客户端应静默跳过，不要当错误弹窗。
+/// WPF 与 Win32 用 platform 参数区分，避免下错包。
+/// </remarks>
 [ApiController]
 [Route("api/update")]
 [Produces("application/json")]
+[Tags("客户端更新")]
 public sealed class UpdateController(IOptionsMonitor<UpdateOptions> options, ILogger<UpdateController> logger,
     IWebHostEnvironment env) : ControllerBase
 {
-    // 没有可用更新时返回空清单而不是 404：客户端把空 latestVersion 视为“无更新”静默跳过，
-    // 避免每次启动都弹“更新失败”。
-    private static readonly object EmptyManifest = new { latestVersion = "", packageUrl = "" };
+    // 没有可用更新时返回空清单而不是 404：客户端把空 latestVersion 视为“无更新”静默跳过
+    private static readonly UpdateManifestResponse EmptyManifest = new()
+    {
+        LatestVersion = "",
+        PackageUrl = "",
+    };
 
-    /// <summary>返回 WPF/Win32 客户端可用的最新更新清单。</summary>
+    /// <summary>获取客户端更新清单。</summary>
+    /// <param name="platform">平台：省略或 win-x64 为 WPF；win32-x64 为 Win32 客户端。</param>
+    /// <param name="channel">通道，默认 stable。</param>
+    /// <response code="200">有更新时含版本与下载地址；无更新时 latestVersion / packageUrl 为空串。</response>
     [HttpGet("manifest")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(UpdateManifestResponse), StatusCodes.Status200OK)]
     public IActionResult Manifest([FromQuery] string? platform = null, [FromQuery] string? channel = null)
     {
-        // 清单要求实时性，禁止中间层缓存。
         Response.Headers.CacheControl = "no-store";
 
         var update = options.CurrentValue;
@@ -35,27 +45,25 @@ public sealed class UpdateController(IOptionsMonitor<UpdateOptions> options, ILo
         if (!enabled || string.IsNullOrWhiteSpace(latestVersion) || string.IsNullOrWhiteSpace(packageUrl))
             return Ok(EmptyManifest);
 
-        // 客户端不支持相对地址，按当前请求补全为绝对地址。
         if (packageUrl.StartsWith('/'))
             packageUrl = $"{Request.Scheme}://{Request.Host}{packageUrl}";
 
-        // 更新包文件不存在时同样返回空清单，避免客户端拿到 404 的下载地址报“更新失败”。
         if (!PackageFileExists(packageUrl))
         {
             logger.LogWarning("更新包文件不存在：{PackageUrl}，已按无可用更新返回", packageUrl);
             return Ok(EmptyManifest);
         }
 
-        return Ok(new
+        return Ok(new UpdateManifestResponse
         {
-            latestVersion,
-            minSupportedVersion,
-            packageUrl,
-            sha256,
-            forceUpdate,
-            releaseNotes,
-            platform = string.IsNullOrWhiteSpace(platform) ? "win-x64" : platform,
-            channel = string.IsNullOrWhiteSpace(channel) ? "stable" : channel
+            LatestVersion = latestVersion,
+            MinSupportedVersion = minSupportedVersion,
+            PackageUrl = packageUrl,
+            Sha256 = sha256,
+            ForceUpdate = forceUpdate,
+            ReleaseNotes = releaseNotes,
+            Platform = string.IsNullOrWhiteSpace(platform) ? "win-x64" : platform,
+            Channel = string.IsNullOrWhiteSpace(channel) ? "stable" : channel,
         });
     }
 
@@ -63,10 +71,9 @@ public sealed class UpdateController(IOptionsMonitor<UpdateOptions> options, ILo
     private bool PackageFileExists(string packageUrl)
     {
         var webRoot = env.WebRootPath;
-        if (string.IsNullOrEmpty(webRoot)) return true; // 未托管静态目录时无法校验，交给客户端
+        if (string.IsNullOrEmpty(webRoot)) return true;
         if (!Uri.TryCreate(packageUrl, UriKind.Absolute, out var uri)) return true;
 
-        // 非本机部署的远端地址无法校验，直接放行。
         if (!HttpContext.Request.Host.Value.Equals(uri.Authority, StringComparison.OrdinalIgnoreCase) &&
             !uri.IsLoopback)
             return true;

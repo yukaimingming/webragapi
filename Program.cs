@@ -34,8 +34,20 @@ builder.Host.UseSerilog((_, loggerConfiguration) => loggerConfiguration
 // 枚举（任务/文件状态等）序列化为字符串，接口返回更易读
 builder.Services.AddControllers().AddJsonOptions(options =>
     options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
-// 内置 OpenAPI 文档生成（.NET 10 自带，接口文档由 Scalar 展示）
-builder.Services.AddOpenApi();
+// 内置 OpenAPI 文档生成（.NET 10 自带，XML 注释会进入文档，由 Scalar 展示）
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer((document, _, _) =>
+    {
+        document.Info.Title = "WebRag API";
+        document.Info.Version = "v1";
+        document.Info.Description =
+            "RAG 知识库问答服务：文档导入（扫描件 OCR、内容 SHA256 去重、批量向量化入库）、" +
+            "混合检索（向量 + BM25 + RRF + Cross-Encoder 形态重排）、" +
+            "RAG 问答（一次性 JSON 与 SSE 流式）。";
+        return Task.CompletedTask;
+    });
+});
 
 // 允许跨域（网页 demo 与接口同源部署，此配置仅为方便外部调试工具调用）
 builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
@@ -134,10 +146,7 @@ builder.Services.AddSingleton<ChatService>();
 var app = builder.Build();
 
 // ---------- 中间件 ----------
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi(); // /openapi/v1.json
-}
+app.MapOpenApi(); // /openapi/v1.json（Scalar 依赖此文档）
 
 // Scalar 接口文档：访问 /scalar 打开可视化文档页面
 app.MapScalarApiReference(options =>
@@ -159,7 +168,7 @@ Log.Information(
     RuntimeInformation.FrameworkDescription);
 
 // ---------- 启动时扫描上传目录，自动导入尚未入库的新文档 ----------
-// 已存在的文档会被自动过滤，因此服务重启不会重复导入；
+// 已存在的文档按内容哈希过滤，因此服务重启不会重复导入；
 // 服务运行期间上传的文档走上传接口的后台任务，导入完成即可被检索（无需重启）
 using (var scope = app.Services.CreateScope())
 {

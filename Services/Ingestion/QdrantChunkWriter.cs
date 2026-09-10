@@ -14,7 +14,8 @@ public class QdrantChunkWriter(
     IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator,
     Qdrant.Client.QdrantClient qdrantClient,
     ILogger<QdrantChunkWriter> logger,
-    IReadOnlyDictionary<string, (long Size, DateTimeOffset UploadedAt)>? fileMeta) : IngestionChunkWriter<string>
+    IReadOnlyDictionary<string, (long Size, DateTimeOffset UploadedAt, string ContentHash)>? fileMeta,
+    int batchSize = 32) : IngestionChunkWriter<string>
 {
     /// <summary>Qdrant 集合名称</summary>
     public const string CollectionName = "webrag-chunks";
@@ -22,8 +23,8 @@ public class QdrantChunkWriter(
     /// <summary>向量维度：bge-m3 输出 1024 维</summary>
     public const int VectorDimensions = 1024;
 
-    // 每批向量化/写入的切块数（避免 Ollama 单次请求过大）
-    private const int BatchSize = 32;
+    // 每批向量化/写入的切块数；Ollama 侧还会再按 Ollama:BatchSize 拆小批
+    private readonly int _batchSize = Math.Clamp(batchSize, 1, 128);
 
     private readonly List<string> _seenDocumentIds = [];
 
@@ -37,6 +38,16 @@ public class QdrantChunkWriter(
                 new VectorParams { Size = VectorDimensions, Distance = Distance.Cosine });
             logger.LogInformation("已创建 Qdrant 集合 '{Collection}'（{Dims} 维，余弦距离）。", CollectionName, VectorDimensions);
         }
+
+        // 按内容哈希去重时走 payload 过滤，建 keyword 索引避免全表扫
+        try
+        {
+            await qdrantClient.CreatePayloadIndexAsync(CollectionName, "contenthash", PayloadSchemaType.Keyword, cancellationToken: ct);
+        }
+        catch (Grpc.Core.RpcException)
+        {
+            // 索引已存在时忽略
+        }
     }
 
     /// <summary>管道回调：把切块批量向量化并写入 Qdrant</summary>
@@ -44,7 +55,7 @@ public class QdrantChunkWriter(
     {
         await EnsureCollectionAsync(cancellationToken);
 
-        var batch = new List<IngestionChunk<string>>(BatchSize);
+        var batch = new List<IngestionChunk<string>>(_batchSize);
         await foreach (var chunk in chunks.WithCancellation(cancellationToken))
         {
             var docId = chunk.Document.Identifier;
@@ -52,7 +63,7 @@ public class QdrantChunkWriter(
                 _seenDocumentIds.Add(docId);
 
             batch.Add(chunk);
-            if (batch.Count >= BatchSize)
+            if (batch.Count >= _batchSize)
             {
                 await WriteBatchAsync(batch, cancellationToken);
                 batch.Clear();
@@ -78,7 +89,9 @@ public class QdrantChunkWriter(
             {
                 var chunk = batch[i];
                 var docId = chunk.Document.Identifier;
-                (long Size, DateTimeOffset UploadedAt) meta = fileMeta is not null && fileMeta.TryGetValue(docId, out var m) ? m : (0L, DateTimeOffset.Now);
+                (long Size, DateTimeOffset UploadedAt, string ContentHash) meta = fileMeta is not null && fileMeta.TryGetValue(docId, out var m)
+                    ? m
+                    : (0L, DateTimeOffset.Now, "");
 
                 var payload = new Dictionary<string, Value>
                 {
@@ -89,6 +102,9 @@ public class QdrantChunkWriter(
                     ["filesize"] = new() { DoubleValue = meta.Size },
                     ["uploadedat"] = new() { StringValue = meta.UploadedAt.ToString("O") },
                 };
+                // 内容 SHA256：去重用，与文件名无关
+                if (!string.IsNullOrEmpty(meta.ContentHash))
+                    payload["contenthash"] = new() { StringValue = meta.ContentHash };
 
                 // PDF 等按页解析的文档：从切块元数据里提取页码（若切块器有输出）
                 if (TryGetPageNumber(chunk, out var pageNumber))
@@ -103,7 +119,8 @@ public class QdrantChunkWriter(
             }
 
             await qdrantClient.UpsertAsync(CollectionName, points, cancellationToken: ct);
-            logger.LogDebug("已写入 {Count} 个切块到 Qdrant。", points.Count);
+            logger.LogInformation("批量向量化并写入 Qdrant {Count} 个切块（本批文档：{Docs}）。",
+                points.Count, string.Join(", ", batch.Select(c => c.Document.Identifier).Distinct()));
         }
         catch (Exception ex)
         {

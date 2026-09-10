@@ -5,6 +5,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>63062d6a-0e41-4d0a-9980-f39ae4d80e9d</UserSecretsId>
+    <!-- Scalar / OpenAPI 读取 XML 注释作为接口说明 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591;1573</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

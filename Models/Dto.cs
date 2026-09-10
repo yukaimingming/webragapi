@@ -41,7 +41,9 @@ public enum IngestionFileStatus
 /// <summary>一次文档导入任务（可包含多个文件），供 /api/knowledge/tasks/{id} 查询进度</summary>
 public class IngestionTask
 {
+    /// <summary>任务 ID（上传接口返回的 taskId）</summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    /// <summary>任务总体状态</summary>
     public IngestionTaskStatus Status { get; set; } = IngestionTaskStatus.Queued;
 
     /// <summary>本次任务涉及的文件总数</summary>
@@ -53,8 +55,11 @@ public class IngestionTask
     /// <summary>当前正在处理的文件名</summary>
     public string? CurrentFile { get; set; }
 
+    /// <summary>触发来源：upload=上传接口；startup=服务启动扫描目录</summary>
     public string? Trigger { get; set; }
+    /// <summary>任务开始时间</summary>
     public DateTimeOffset StartedAt { get; set; }
+    /// <summary>任务结束时间；进行中为空</summary>
     public DateTimeOffset? FinishedAt { get; set; }
 
     /// <summary>整体错误信息（如 Ollama/Qdrant 连接失败）</summary>
@@ -70,8 +75,11 @@ public class IngestionFileProgress
     /// <summary>上传的文件名</summary>
     public required string FileName { get; set; }
 
-    /// <summary>文档标识（即文件名）</summary>
+    /// <summary>文档标识（列表/删除仍用文件名）</summary>
     public required string DocumentId { get; set; }
+
+    /// <summary>文件内容 SHA256，用于判断是否重复上传</summary>
+    public string? ContentHash { get; set; }
 
     /// <summary>文件大小（字节）</summary>
     public IngestionFileStatus Status { get; set; } = IngestionFileStatus.Pending;
@@ -79,6 +87,7 @@ public class IngestionFileProgress
     /// <summary>成功导入后生成的切块数量</summary>
     public int ChunkCount { get; set; }
 
+    /// <summary>失败或跳过原因</summary>
     public string? Error { get; set; }
 
     /// <summary>所属任务的引用（导入器用它推进任务级计数）</summary>
@@ -92,17 +101,20 @@ public class UploadDocumentsResponse
     /// <summary>后台导入任务 ID，用 GET /api/knowledge/tasks/{id} 查进度</summary>
     public string TaskId { get; set; } = string.Empty;
 
+    /// <summary>每个上传文件的受理结果</summary>
     public List<UploadFileResult> Results { get; set; } = [];
 }
 
 /// <summary>单个上传文件的受理结果</summary>
 public class UploadFileResult
 {
+    /// <summary>原始文件名</summary>
     public required string FileName { get; set; }
 
-    /// <summary>accepted=已受理进入导入队列；duplicate=知识库已存在同名文档被过滤；unsupported=类型不支持</summary>
+    /// <summary>accepted=已受理进入导入队列；duplicate=内容哈希已存在被过滤；failed=校验失败</summary>
     public required string Status { get; set; }
 
+    /// <summary>说明，如重复时已有文档的文件名</summary>
     public string? Message { get; set; }
 }
 
@@ -112,8 +124,11 @@ public class DocumentInfo
     /// <summary>文档标识（即文件名）</summary>
     public required string DocumentId { get; set; }
 
+    /// <summary>显示用文件名</summary>
     public required string FileName { get; set; }
+    /// <summary>源文件大小（字节）</summary>
     public long FileSize { get; set; }
+    /// <summary>入库时间</summary>
     public DateTimeOffset? UploadedAt { get; set; }
 
     /// <summary>该文档被切成的块数</summary>
@@ -133,9 +148,13 @@ public class DocumentDetail : DocumentInfo
 /// <summary>切块内容预览</summary>
 public class DocumentChunkPreview
 {
+    /// <summary>切块在向量库中的点 ID</summary>
     public required string Key { get; set; }
+    /// <summary>切块上下文（如章节标题）</summary>
     public string? Context { get; set; }
+    /// <summary>页码；非 PDF 可为空</summary>
     public int? PageNumber { get; set; }
+    /// <summary>切块正文预览</summary>
     public required string Text { get; set; }
 }
 
@@ -158,15 +177,23 @@ public class SearchRequest
 /// <summary>检索单条结果</summary>
 public class SearchResultItem
 {
+    /// <summary>切块点 ID，融合多路结果时用</summary>
     public string? ChunkId { get; set; }
+    /// <summary>所属文档标识（文件名）</summary>
     public required string DocumentId { get; set; }
+    /// <summary>文件名</summary>
     public required string FileName { get; set; }
     /// <summary>最终排序分（向量余弦 / RRF / 重排分，取决于 mode）</summary>
     public double Score { get; set; }
+    /// <summary>稠密向量余弦分；仅向量检索或融合后带回</summary>
     public double? VectorScore { get; set; }
+    /// <summary>BM25 原始分；仅混合检索或融合后带回</summary>
     public double? Bm25Score { get; set; }
+    /// <summary>切块正文</summary>
     public required string Text { get; set; }
+    /// <summary>切块上下文</summary>
     public string? Context { get; set; }
+    /// <summary>页码；非 PDF 可为空</summary>
     public int? PageNumber { get; set; }
 }
 
@@ -203,6 +230,7 @@ public class ChatHistoryMessage
 {
     /// <summary>角色：user 或 assistant</summary>
     public required string Role { get; set; }
+    /// <summary>消息正文</summary>
     public required string Content { get; set; }
 }
 
@@ -225,7 +253,9 @@ public class ChatResponse
 /// <summary>回答引用的来源（按文档聚合）</summary>
 public class ChatSource
 {
+    /// <summary>文档标识（文件名）</summary>
     public required string DocumentId { get; set; }
+    /// <summary>文件名</summary>
     public required string FileName { get; set; }
 
     /// <summary>引用内容所在的页码（无页码概念时为空）</summary>
@@ -249,4 +279,45 @@ public class ChatStreamEvent
 
     /// <summary>按文档聚合的引用来源（end 事件携带，mode=knowledge_base 时有值）</summary>
     public List<ChatSource>? Sources { get; set; }
+}
+
+/// <summary>GET /api/chat/config 响应（不含密钥）</summary>
+public class ChatConfigResponse
+{
+    /// <summary>当前聊天模型名</summary>
+    public required string Model { get; set; }
+
+    /// <summary>是否支持深度思考</summary>
+    public bool ThinkingSupported { get; set; }
+
+    /// <summary>可用推理等级：low / medium / high</summary>
+    public required string[] ReasoningEfforts { get; set; }
+}
+
+/// <summary>GET /api/update/manifest 响应。无可用更新时 LatestVersion、PackageUrl 为空串。</summary>
+public class UpdateManifestResponse
+{
+    /// <summary>最新版本号；无更新时为空</summary>
+    public string LatestVersion { get; set; } = "";
+
+    /// <summary>客户端最低支持版本</summary>
+    public string? MinSupportedVersion { get; set; }
+
+    /// <summary>更新包下载地址；无更新时为空</summary>
+    public string PackageUrl { get; set; } = "";
+
+    /// <summary>更新包 SHA256</summary>
+    public string? Sha256 { get; set; }
+
+    /// <summary>是否强制更新</summary>
+    public bool ForceUpdate { get; set; }
+
+    /// <summary>更新说明</summary>
+    public string? ReleaseNotes { get; set; }
+
+    /// <summary>平台：win-x64 或 win32-x64</summary>
+    public string? Platform { get; set; }
+
+    /// <summary>通道，默认 stable</summary>
+    public string? Channel { get; set; }
 }

@@ -9,11 +9,16 @@ using WebRagApi.Services;
 namespace WebRagApi.Controllers;
 
 /// <summary>
-/// AI 问答接口：基于知识库的 RAG 问答（一次性 JSON 与 SSE 流式）。
+/// AI 问答：基于知识库的 RAG（一次性 JSON 与 SSE 流式）。
 /// </summary>
+/// <remarks>
+/// 默认检索管道：向量 + BM25 → RRF 融合 → Cross-Encoder 形态重排。
+/// 知识库能答则走 knowledge_base（含用户上传的非医疗文档）；答不了时医疗问题由模型推理，非医疗则提示范围限制。
+/// </remarks>
 [ApiController]
 [Route("api/chat")]
 [Produces("application/json")]
+[Tags("AI 问答")]
 public class ChatController(ChatService chatService) : ControllerBase
 {
     // camelCase + 中文不转义，SSE 事件里中文直接可读
@@ -22,24 +27,28 @@ public class ChatController(ChatService chatService) : ControllerBase
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
-    /// <summary>前端可公开读取的模型能力（不含 API Key / Endpoint）</summary>
+    /// <summary>前端可公开读取的模型能力（不含 API Key / Endpoint）。</summary>
+    /// <remarks>用于 Demo / 客户端判断是否展示深度思考开关。</remarks>
+    /// <response code="200">返回模型名与推理等级列表。</response>
     [HttpGet("config")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ChatConfigResponse), StatusCodes.Status200OK)]
     public IActionResult Config([FromServices] IOptions<AiChatOptions> options)
     {
         var cfg = options.Value;
-        return Ok(new
+        return Ok(new ChatConfigResponse
         {
-            model = cfg.Model,
-            thinkingSupported = true,
-            reasoningEfforts = new[] { "low", "medium", "high" }
+            Model = cfg.Model,
+            ThinkingSupported = true,
+            ReasoningEfforts = ["low", "medium", "high"],
         });
     }
 
-    /// <summary>
-    /// AI 问答：先做向量检索找相关内容，再由大模型生成回答并返回引用来源（一次性返回完整 JSON）。
-    /// </summary>
-    /// <param name="request">问题与可选参数（TopK、文档过滤、多轮历史）</param>
+    /// <summary>AI 问答：检索相关切块后由大模型生成回答，一次性返回完整 JSON。</summary>
+    /// <param name="request">问题与可选参数（TopK、文档过滤、多轮历史、深度思考）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>回答、模式（knowledge_base / model）、引用来源与检索明细。</returns>
+    /// <response code="200">问答成功。</response>
+    /// <response code="400">问题为空。</response>
     [HttpPost]
     [ProducesResponseType(typeof(ChatResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
@@ -52,11 +61,17 @@ public class ChatController(ChatService chatService) : ControllerBase
         return Ok(response);
     }
 
-    /// <summary>
-    /// AI 流式问答（SSE）：响应为 text/event-stream，按事件推送检索结果、回答模式与增量文本。
-    /// 事件序列：meta（检索命中明细）→ mode（回答模式）→ delta（增量文本，多条）→ end（结束，附最终完整数据）。
-    /// </summary>
+    /// <summary>AI 流式问答（SSE）。</summary>
+    /// <remarks>
+    /// 响应 Content-Type 为 text/event-stream。事件顺序：
+    /// meta（检索命中）→ mode（回答模式）→ reasoning（可选思考增量）→ delta（正文增量，多条）→ end（完整结果）。
+    /// </remarks>
+    /// <param name="request">与非流式问答相同的请求体。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <response code="200">SSE 事件流。</response>
+    /// <response code="400">问题为空。</response>
     [HttpPost("stream")]
+    [Produces("text/event-stream", "application/json")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task StreamChat([FromBody] ChatRequest request, CancellationToken cancellationToken)

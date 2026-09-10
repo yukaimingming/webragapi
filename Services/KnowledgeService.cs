@@ -28,14 +28,14 @@ public class KnowledgeService(
 
     /// <summary>
     /// 保存上传的文件并启动后台导入任务。
-    /// 返回任务 ID；同名文档已在知识库中的会被过滤为 duplicate。
+    /// 按文件内容 SHA256 去重：库中已有相同字节的文档会标为 duplicate，不落盘、不向量化。
     /// </summary>
-    public UploadDocumentsResponse Upload(IFormFileCollection files)
+    public async Task<UploadDocumentsResponse> UploadAsync(IFormFileCollection files)
     {
         DocumentsDirectory.Create();
 
         var progresses = new List<IngestionFileProgress>();
-        var toSave = new List<(IFormFile File, string DocumentId)>();
+        var toSave = new List<(byte[] Bytes, string SafeName, string Hash)>();
 
         foreach (var file in files)
         {
@@ -66,20 +66,40 @@ public class KnowledgeService(
                 continue;
             }
 
-            toSave.Add((file, safeName));
+            await using var upload = file.OpenReadStream();
+            using var buffer = new MemoryStream();
+            await upload.CopyToAsync(buffer);
+            var hash = ContentHash.Sha256Hex(buffer);
+
+            // 内容哈希已在库中：直接跳过，不覆盖磁盘、不进导入队列
+            var existing = await dataIngestor.FindDocumentIdByContentHashAsync(hash);
+            if (existing is not null)
+            {
+                progresses.Add(new IngestionFileProgress
+                {
+                    FileName = safeName,
+                    DocumentId = safeName,
+                    ContentHash = hash,
+                    Status = IngestionFileStatus.Skipped,
+                    Error = $"知识库中已存在相同内容的文档（{existing}），已过滤",
+                });
+                continue;
+            }
+
+            toSave.Add((buffer.ToArray(), safeName, hash));
             progresses.Add(new IngestionFileProgress
             {
                 FileName = safeName,
                 DocumentId = safeName,
+                ContentHash = hash,
             });
         }
 
         // 先落盘再注册任务：后台导入直接读取磁盘文件
-        foreach (var (file, _) in toSave)
+        foreach (var (bytes, safeName, _) in toSave)
         {
-            var targetPath = Path.Combine(DocumentsDirectory.FullName, file.FileName);
-            using var stream = new FileStream(targetPath, FileMode.Create);
-            file.CopyTo(stream);
+            var targetPath = Path.Combine(DocumentsDirectory.FullName, safeName);
+            await File.WriteAllBytesAsync(targetPath, bytes);
         }
 
         var task = taskManager.CreateTask("upload", progresses);
@@ -113,6 +133,7 @@ public class KnowledgeService(
                 Status = f.Status switch
                 {
                     IngestionFileStatus.Failed => "failed",
+                    IngestionFileStatus.Skipped => "duplicate",
                     _ => "accepted",
                 },
                 Message = f.Error,

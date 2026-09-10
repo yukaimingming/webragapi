@@ -4,291 +4,452 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WebRag API 知识库问答 Demo</title>
+<link rel="stylesheet" href="https://unpkg.com/element-plus@2.9.7/dist/index.css">
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: "Microsoft YaHei", "Segoe UI", sans-serif; background: #f0f2f5; color: #1f2329; }
-  header { background: linear-gradient(90deg, #1a5fb4, #268bd2); color: #fff; padding: 16px 24px; }
-  header h1 { font-size: 20px; }
-  header p { font-size: 12px; opacity: .85; margin-top: 4px; }
-  .wrap { max-width: 1100px; margin: 20px auto; padding: 0 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .card { background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.08); padding: 18px; }
-  .card h2 { font-size: 16px; margin-bottom: 12px; color: #1a5fb4; border-bottom: 2px solid #eef2f7; padding-bottom: 8px; }
-  .full { grid-column: 1 / -1; }
-  textarea, input[type=text] { width: 100%; border: 1px solid #d0d7de; border-radius: 6px; padding: 8px 10px; font-size: 14px; font-family: inherit; }
-  textarea { height: 72px; resize: vertical; }
-  button { background: #1a5fb4; color: #fff; border: 0; border-radius: 6px; padding: 8px 18px; font-size: 14px; cursor: pointer; }
-  button:hover { background: #164c90; }
-  button:disabled { background: #9db8d8; cursor: wait; }
-  button.gray { background: #6e7781; }
-  button.red { background: #cf222e; padding: 4px 10px; font-size: 12px; }
-  button.small { padding: 4px 10px; font-size: 12px; }
-  .row { display: flex; gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
-  .answer { background: #f6f8fa; border-radius: 8px; padding: 12px; margin-top: 10px; white-space: pre-wrap; line-height: 1.7; font-size: 14px; min-height: 40px; }
-  .sources { margin-top: 10px; }
-  .sources .src { display: inline-block; background: #e7f0fb; color: #1a5fb4; border-radius: 12px; padding: 3px 12px; font-size: 12px; margin: 2px 4px 2px 0; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 8px; }
-  th, td { border-bottom: 1px solid #eef1f4; padding: 7px 8px; text-align: left; word-break: break-all; }
-  th { color: #6e7781; font-weight: 600; background: #fafbfc; }
-  .ref { background: #f6f8fa; border-left: 3px solid #268bd2; border-radius: 4px; padding: 8px 10px; margin-top: 8px; font-size: 13px; line-height: 1.6; }
-  .ref .meta { color: #6e7781; font-size: 12px; margin-bottom: 4px; }
-  .badge { display: inline-block; border-radius: 10px; padding: 1px 8px; font-size: 12px; margin-right: 4px; }
-  .b-ok { background: #dafbe1; color: #116329; }
-  .b-warn { background: #fff3cd; color: #7a5b00; }
-  .b-err { background: #ffebe9; color: #a40e26; }
-  .progress { height: 8px; background: #eef1f4; border-radius: 4px; overflow: hidden; margin-top: 6px; }
-  .progress div { height: 100%; background: #268bd2; transition: width .3s; }
-  .hint { color: #8b949e; font-size: 12px; margin-top: 6px; }
-  .task-line { font-size: 13px; margin-top: 8px; }
-  #uploadResults { font-size: 13px; margin-top: 8px; line-height: 1.8; }
-  .empty { color: #8b949e; font-size: 13px; padding: 8px 0; }
+  html, body { margin: 0; background: #f5f7fa; font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif; }
+  .page-header { background: linear-gradient(120deg, #1a5fb4 0%, #268bd2 55%, #3d8bfd 100%); color: #fff; padding: 20px 28px; }
+  .page-header h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  .page-header p { margin: 6px 0 0; font-size: 13px; opacity: .9; }
+  .page-header a { color: #fff; text-decoration: underline; }
+  .page-body { max-width: 1200px; margin: 20px auto 40px; padding: 0 16px; }
+  .hint { color: #909399; font-size: 12px; line-height: 1.6; margin-top: 8px; }
+  .answer-box { background: #f6f8fa; border-radius: 8px; padding: 14px 16px; white-space: pre-wrap; line-height: 1.75; font-size: 14px; min-height: 48px; }
+  .ref-item { background: #f6f8fa; border-left: 3px solid #409eff; border-radius: 4px; padding: 10px 12px; margin-top: 8px; font-size: 13px; line-height: 1.65; }
+  .ref-meta { color: #909399; font-size: 12px; margin-bottom: 4px; }
+  .task-block { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #ebeef5; }
+  .task-block:last-child { border-bottom: 0; margin-bottom: 0; }
+  .file-line { margin-top: 6px; font-size: 13px; color: #606266; }
+  .el-upload { width: 100%; }
+  .doc-table .cell { word-break: break-all; white-space: normal; }
+  .chat-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+  .send-btn {
+    appearance: none; border: 0; background: #409eff; color: #fff;
+    font-size: 15px; font-weight: 600; padding: 10px 32px; border-radius: 4px;
+    cursor: pointer; flex-shrink: 0; min-width: 120px;
+  }
+  .send-btn:hover { background: #337ecc; }
+  .send-btn:disabled { background: #a0cfff; cursor: wait; }
 </style>
 </head>
 <body>
-<header>
-  <h1>WebRag API 知识库问答 Demo</h1>
-  <p>.NET 10 + Qdrant + Ollama(bge-m3) + 商汤 SenseNova ｜ 接口文档：<a href="/scalar" style="color:#fff">/scalar</a></p>
-</header>
+<div id="app">
+  <header class="page-header">
+    <h1>WebRag API 知识库问答 Demo</h1>
+    <p>.NET 10 + Qdrant + Ollama(bge-m3) + 商汤 SenseNova ｜ 接口文档：<a href="/scalar">/scalar</a></p>
+  </header>
 
-<div class="wrap">
-  <!-- 知识库管理 -->
-  <div class="card">
-    <h2>📚 知识库文档</h2>
-    <div class="row">
-      <input type="file" id="fileInput" multiple accept=".pdf,.doc,.docx,.md,.png,.jpg,.jpeg,.tif,.tiff,.bmp" style="font-size:13px">
-      <button onclick="uploadFiles()">上传并导入</button>
-      <button class="gray" onclick="loadDocuments()">刷新列表</button>
-    </div>
-    <div class="hint">支持 pdf / doc / docx / md，以及扫描件 png/jpg/jpeg。扫描件 PDF 无文字层时自动 OCR。可多选，同名文档已存在时自动过滤。</div>
-    <div id="uploadResults"></div>
-    <div id="taskProgress" class="task-line"></div>
-    <div id="docTable"></div>
-    <h2 style="margin-top:16px">⏳ 导入任务（刷新页面也可见）</h2>
-    <div id="taskList"><div class="empty">加载中…</div></div>
-  </div>
+  <div class="page-body">
+    <el-row :gutter="16">
+      <el-col :xs="24" :md="12">
+        <el-card shadow="hover" style="margin-bottom:16px">
+          <template #header>
+            <span style="font-weight:600;color:#1a5fb4">知识库文档</span>
+          </template>
 
-  <!-- 向量检索测试 -->
-  <div class="card">
-    <h2>🔍 检索测试</h2>
-    <div class="row">
-      <input type="text" id="searchQuery" placeholder="输入检索内容，如：量子比特 / 张阿三" style="flex:1">
-      <input type="number" id="searchTopK" value="5" min="1" max="20" style="width:70px" title="TopK">
-      <select id="searchMode" style="font-size:13px;padding:6px 8px;border:1px solid #d0d7de;border-radius:6px">
-        <option value="vector">仅向量</option>
-        <option value="hybrid">向量+BM25+RRF</option>
-        <option value="rerank" selected>RRF+Cross-Encoder 重排</option>
-      </select>
-      <button onclick="doSearch()">检索</button>
-    </div>
-    <div class="hint">POST /api/knowledge/search。精确词（人名、药名）看 BM25/RRF；语义问题看向量。问答默认走重排。</div>
-    <div id="searchResults"></div>
-  </div>
+          <el-upload
+            ref="uploader"
+            drag
+            multiple
+            :auto-upload="false"
+            :on-change="onFileChange"
+            :on-remove="onFileRemove"
+            :file-list="fileList"
+            accept=".pdf,.doc,.docx,.md,.png,.jpg,.jpeg,.tif,.tiff,.bmp"
+            action="#">
+            <div class="el-upload__text">将文件拖到此处，或<em>点击选择</em></div>
+            <template #tip>
+              <div class="hint">
+                支持 pdf / doc / docx / md，以及扫描件 png/jpg/jpeg。扫描件无文字层时自动 OCR。可多选。
+                按<strong>文件内容 SHA256</strong> 去重：内容相同即使改名也会跳过；同名但内容变了会覆盖导入。
+              </div>
+            </template>
+          </el-upload>
 
-  <!-- AI 问答 -->
-  <div class="card full">
-    <h2>🤖 AI 问答（RAG，回答附带引用来源）</h2>
-    <textarea id="question" placeholder="例如：bge-m3 模型的向量维度是多少？"></textarea>
-    <div class="row">
-      <input type="number" id="chatTopK" value="8" min="1" max="20" style="width:70px" title="TopK">
-      <span class="hint">TopK：检索多少个切块作为上下文。知识库里已有的文档（含非医疗）会按文档回答；只有知识库答不了且问题也不是医疗时，才会提示范围限制。</span>
-      <button id="askBtn" onclick="doChat()">提问</button>
-    </div>
-    <div id="chatAnswer" class="answer" style="display:none"></div>
-    <div id="chatSources" class="sources"></div>
-    <div id="chatRefs"></div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+            <el-button type="primary" :loading="uploading" @click="uploadFiles">上传并导入</el-button>
+            <el-button @click="loadDocuments">刷新列表</el-button>
+          </div>
+
+          <div v-if="uploadResults.length" style="margin-top:10px">
+            <el-tag
+              v-for="(r, i) in uploadResults"
+              :key="i"
+              :type="r.type"
+              style="margin:0 6px 6px 0"
+              effect="light">
+              {{ r.text }}
+            </el-tag>
+          </div>
+
+          <el-table class="doc-table" :data="docs" stripe size="small" style="width:100%;margin-top:14px" empty-text="知识库还没有文档，先上传一个吧。">
+            <el-table-column label="文档名" min-width="220">
+              <template #default="{ row }">{{ row.fileName || row.documentId }}</template>
+            </el-table-column>
+            <el-table-column prop="chunkCount" label="切块" width="64" />
+            <el-table-column label="大小" width="88">
+              <template #default="{ row }">{{ (row.fileSize / 1024).toFixed(1) }} KB</template>
+            </el-table-column>
+            <el-table-column label="上传时间" width="150">
+              <template #default="{ row }">{{ formatTime(row.uploadedAt) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="72">
+              <template #default="{ row }">
+                <el-button type="danger" link size="small" @click="delDoc(row.documentId)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
+        <el-card shadow="hover" style="margin-bottom:16px">
+          <template #header>
+            <span style="font-weight:600;color:#1a5fb4">导入任务</span>
+            <span class="hint" style="margin-left:8px">刷新页面也可见，进行中会自动轮询</span>
+          </template>
+          <el-empty v-if="!tasks.length" description="还没有导入任务" :image-size="64" />
+          <div v-for="t in tasks" :key="t.id" class="task-block">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span style="font-size:13px;color:#606266">
+                任务 {{ t.id.slice(0, 8) }}…（{{ t.trigger === 'upload' ? '上传' : '启动扫描' }} {{ formatClock(t.startedAt) }}）
+              </span>
+              <el-tag :type="statusType(t.status)" size="small">{{ statusLabel(t.status) }}</el-tag>
+              <span style="font-size:12px;color:#909399">{{ t.processedFiles }}/{{ t.totalFiles }}</span>
+            </div>
+            <el-progress :percentage="taskPct(t)" :stroke-width="8" style="margin-top:8px" />
+            <div v-for="(f, i) in t.files" :key="i" class="file-line">
+              <el-tag :type="fileTagType(f)" size="small" style="margin-right:6px">{{ fileTagLabel(f) }}</el-tag>
+              {{ f.fileName }}
+              <span v-if="f.chunkCount">（{{ f.chunkCount }} 个切块，已可检索/提问）</span>
+              <span v-else-if="f.status === 'Imported'">（0 个切块）</span>
+              <span v-if="f.error" style="color:#e6a23c"> — {{ f.error }}</span>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+
+      <el-col :xs="24" :md="12">
+        <el-card shadow="hover" style="margin-bottom:16px">
+          <template #header>
+            <span style="font-weight:600;color:#1a5fb4">检索测试</span>
+          </template>
+          <el-input v-model="searchQuery" placeholder="输入检索内容，如：量子比特 / 张阿三" clearable @keyup.enter="doSearch">
+            <template #append>
+              <el-button type="primary" :loading="searching" @click="doSearch">检索</el-button>
+            </template>
+          </el-input>
+          <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+            <el-input-number v-model="searchTopK" :min="1" :max="20" size="small" />
+            <el-select v-model="searchMode" size="small" style="width:220px">
+              <el-option label="仅向量" value="vector" />
+              <el-option label="向量+BM25+RRF" value="hybrid" />
+              <el-option label="RRF+Cross-Encoder 重排" value="rerank" />
+            </el-select>
+          </div>
+          <div class="hint">POST /api/knowledge/search。精确词（人名、药名）看 BM25/RRF；语义问题看向量。问答默认走重排。</div>
+          <el-empty v-if="searchEmpty" description="没有命中任何内容。" :image-size="56" />
+          <div v-for="(r, i) in searchResults" :key="i" class="ref-item">
+            <div class="ref-meta">
+              {{ r.fileName }}<span v-if="r.pageNumber"> · 第 {{ r.pageNumber }} 页</span>
+              · 得分 {{ r.score.toFixed(4) }}
+              <span v-if="r.vectorScore != null"> · 向量 {{ r.vectorScore.toFixed(3) }}</span>
+              <span v-if="r.bm25Score != null"> · BM25 {{ r.bm25Score.toFixed(3) }}</span>
+            </div>
+            {{ preview(r.text, 300) }}
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <el-card shadow="hover">
+      <template #header>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+          <span style="font-weight:600;color:#1a5fb4">AI 问答（RAG，回答附带引用来源）</span>
+          <el-button type="primary" :loading="asking" @click="doChat">发送</el-button>
+        </div>
+      </template>
+      <div>
+      <el-input
+        v-model="question"
+        type="textarea"
+        :rows="3"
+        placeholder="例如：高血压急症怎么处理？ / bge-m3 模型的向量维度是多少？"
+        @keydown.ctrl.enter="doChat" />
+      <div class="chat-actions">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:1">
+          <el-input-number v-model="chatTopK" :min="1" :max="20" size="small" />
+          <span class="hint" style="margin:0">TopK：检索切块数。Ctrl+Enter 也可发送。</span>
+        </div>
+        <button type="button" class="send-btn" :disabled="asking" @click="doChat">{{ asking ? '发送中...' : '发送' }}</button>
+      </div>
+
+      <div v-if="chatVisible" style="margin-top:14px">
+        <el-tag v-if="chatMode === 'model'" type="warning" style="margin-bottom:8px">大模型推理（知识库未命中）</el-tag>
+        <el-tag v-else-if="chatMode === 'knowledge_base'" type="success" style="margin-bottom:8px">知识库回答</el-tag>
+        <el-tag v-else-if="chatStatus" type="info" style="margin-bottom:8px">{{ chatStatus }}</el-tag>
+        <div class="answer-box">{{ chatAnswer }}</div>
+        <div v-if="chatSources.length" style="margin-top:10px">
+          <span style="font-size:13px;color:#606266;margin-right:6px">引用来源：</span>
+          <el-tag v-for="(s, i) in chatSources" :key="i" type="primary" effect="plain" style="margin:0 6px 6px 0">
+            {{ s.fileName }}<span v-if="s.pageNumbers && s.pageNumbers.length">（第 {{ s.pageNumbers.join(', ') }} 页）</span>
+          </el-tag>
+        </div>
+        <div v-if="chatRefs.length" class="hint" style="margin-top:10px">本次检索命中的切块：</div>
+        <div v-for="(r, i) in chatRefs" :key="i" class="ref-item">
+          <div class="ref-meta">
+            {{ r.fileName }}<span v-if="r.pageNumber"> · 第 {{ r.pageNumber }} 页</span>
+            · 相似度 {{ r.score.toFixed(4) }}
+          </div>
+          {{ preview(r.text, 200) }}
+        </div>
+      </div>
+      </div>
+    </el-card>
   </div>
 </div>
 
+<script src="https://unpkg.com/vue@3.5.13/dist/vue.global.prod.js"></script>
+<script src="https://unpkg.com/element-plus@2.9.7/dist/index.full.min.js"></script>
+<script src="https://unpkg.com/element-plus@2.9.7/dist/locale/zh-cn.min.js"></script>
 <script>
-const $ = id => document.getElementById(id);
+const { createApp, ref, onMounted, onUnmounted } = Vue;
 
-// ---------- 知识库：任务进度 ----------
-const statusMap = { Queued: ['排队中', 'b-warn'], Processing: ['导入中', 'b-warn'], Completed: ['完成', 'b-ok'], PartialFailed: ['部分失败', 'b-err'], Failed: ['失败', 'b-err'] };
-const fileStatusMap = { Pending: ['等待', 'b-warn'], Processing: ['处理中', 'b-warn'], Imported: ['导入成功', 'b-ok'], Skipped: ['已存在跳过', 'b-warn'], Failed: ['失败', 'b-err'] };
+const statusMap = {
+  Queued: ['排队中', 'warning'],
+  Processing: ['导入中', 'warning'],
+  Completed: ['完成', 'success'],
+  PartialFailed: ['部分失败', 'danger'],
+  Failed: ['失败', 'danger'],
+};
+const fileStatusMap = {
+  Pending: ['等待', 'info'],
+  Processing: ['处理中', 'warning'],
+  Imported: ['导入成功', 'success'],
+  Skipped: ['已存在跳过', 'warning'],
+  Failed: ['失败', 'danger'],
+};
 
-function renderTask(t) {
-  const pct = t.totalFiles ? Math.round(t.processedFiles / t.totalFiles * 100) : 0;
-  const [label, cls] = statusMap[t.status] || [t.status, 'b-warn'];
-  let html = `<div class="task-line">任务 ${t.id.slice(0, 8)}…（${t.trigger === 'upload' ? '上传' : '启动扫描'} ${new Date(t.startedAt).toLocaleTimeString('zh-CN')}）：
-    <span class="badge ${cls}">${label}</span> ${t.processedFiles}/${t.totalFiles} 个文件（${pct}%）
-    <div class="progress"><div style="width:${pct}%"></div></div>`;
-  html += t.files.map(f => {
-    // 成功但带警告（如扫描件 0 切块）用黄色提示
-    const warn = f.status === 'Imported' && f.error;
-    const [l, c] = warn ? ['有警告', 'b-warn'] : (fileStatusMap[f.status] || [f.status, 'b-warn']);
-    return `<div style="margin-top:4px"><span class="badge ${c}">${l}</span>${f.fileName} ${f.chunkCount ? `（${f.chunkCount} 个切块，已可检索/提问）` : (f.status === 'Imported' ? '（0 个切块）' : '')} ${f.error ? `— ${f.error}` : ''}</div>`;
-  }).join('');
-  return html + '</div>';
-}
+createApp({
+  setup() {
+    const fileList = ref([]);
+    const uploading = ref(false);
+    const uploadResults = ref([]);
+    const docs = ref([]);
+    const tasks = ref([]);
+    let taskPollTimer = null;
 
-// 任务面板：页面加载即显示所有任务，有进行中的任务时自动轮询
-let taskPollTimer = null;
-async function refreshTasks() {
-  const res = await fetch('/api/knowledge/tasks');
-  const tasks = await res.json();
-  $('taskList').innerHTML = tasks.length
-    ? tasks.map(renderTask).join('')
-    : '<div class="empty">还没有导入任务。</div>';
-  // 有进行中的任务时持续轮询并联动刷新文档列表
-  const hasActive = tasks.some(t => t.status === 'Queued' || t.status === 'Processing');
-  if (hasActive && !taskPollTimer) {
-    taskPollTimer = setInterval(async () => {
-      await refreshTasks();
-      await loadDocuments();
-    }, 2000);
-  } else if (!hasActive && taskPollTimer) {
-    clearInterval(taskPollTimer);
-    taskPollTimer = null;
-    loadDocuments();
-  }
-}
+    const searchQuery = ref('');
+    const searchTopK = ref(5);
+    const searchMode = ref('rerank');
+    const searching = ref(false);
+    const searchResults = ref([]);
+    const searchEmpty = ref(false);
 
-// ---------- 知识库：上传 ----------
-async function uploadFiles() {
-  const input = $('fileInput');
-  if (!input.files.length) return alert('请先选择文件');
-  const fd = new FormData();
-  for (const f of input.files) fd.append('files', f);
-  $('uploadResults').innerHTML = '<span class="badge b-warn">上传中…</span>';
-  const res = await fetch('/api/knowledge/documents', { method: 'POST', body: fd });
-  const data = await res.json();
-  if (!res.ok) { $('uploadResults').innerHTML = `<span class="badge b-err">上传失败：${data.message || res.status}</span>`; return; }
+    const question = ref('');
+    const chatTopK = ref(8);
+    const asking = ref(false);
+    const chatVisible = ref(false);
+    const chatStatus = ref('');
+    const chatMode = ref('');
+    const chatAnswer = ref('');
+    const chatSources = ref([]);
+    const chatRefs = ref([]);
 
-  $('uploadResults').innerHTML = data.results.map(r => {
-    const cls = r.status === 'accepted' ? 'b-ok' : (r.status === 'duplicate' ? 'b-warn' : 'b-err');
-    const label = r.status === 'accepted' ? '已受理，后台导入中' : r.status === 'duplicate' ? '已存在，被过滤' : '失败';
-    return `<span class="badge ${cls}">${r.fileName}：${label}</span>`;
-  }).join('');
+    const formatTime = t => t ? new Date(t).toLocaleString('zh-CN') : '—';
+    const formatClock = t => t ? new Date(t).toLocaleTimeString('zh-CN') : '';
+    const taskPct = t => t.totalFiles ? Math.round(t.processedFiles / t.totalFiles * 100) : 0;
+    const statusLabel = s => (statusMap[s] || [s])[0];
+    const statusType = s => (statusMap[s] || [s, 'info'])[1];
+    const fileTagLabel = f => (f.status === 'Imported' && f.error) ? '有警告' : (fileStatusMap[f.status] || [f.status])[0];
+    const fileTagType = f => (f.status === 'Imported' && f.error) ? 'warning' : (fileStatusMap[f.status] || [f.status, 'info'])[1];
+    const preview = (text, n) => {
+      const s = text || '';
+      return s.length > n ? s.slice(0, n) + '…' : s;
+    };
 
-  refreshTasks(); // 任务面板会持续轮询直到导入完成
-}
+    const onFileChange = (file, list) => { fileList.value = list; };
+    const onFileRemove = (file, list) => { fileList.value = list; };
 
-// ---------- 知识库：列表 ----------
-async function loadDocuments() {
-  const res = await fetch('/api/knowledge/documents');
-  const docs = await res.json();
-  if (!docs.length) { $('docTable').innerHTML = '<div class="empty">知识库还没有文档，先上传一个吧。</div>'; return; }
-  $('docTable').innerHTML = `<table>
-    <tr><th>文档名</th><th>切块数</th><th>大小</th><th>上传时间</th><th>操作</th></tr>
-    ${docs.map(d => `<tr>
-      <td>${d.fileName}</td><td>${d.chunkCount}</td>
-      <td>${(d.fileSize / 1024).toFixed(1)} KB</td>
-      <td>${d.uploadedAt ? new Date(d.uploadedAt).toLocaleString('zh-CN') : '—'}</td>
-      <td><button class="red" onclick="delDoc('${encodeURIComponent(d.documentId)}')">删除</button></td>
-    </tr>`).join('')}
-  </table>`;
-}
-
-async function delDoc(id) {
-  if (!confirm('确认删除该文档及其全部向量？')) return;
-  const res = await fetch(`/api/knowledge/documents/${id}`, { method: 'DELETE' });
-  if (res.status === 204) { loadDocuments(); }
-  else { const e = await res.json(); alert(e.message || '删除失败'); }
-}
-
-// ---------- 检索测试 ----------
-async function doSearch() {
-  const q = $('searchQuery').value.trim();
-  if (!q) return alert('请输入检索内容');
-  $('searchResults').innerHTML = '<span class="badge b-warn">检索中…</span>';
-  const res = await fetch('/api/knowledge/search', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: q, topK: +$('searchTopK').value || 5, mode: $('searchMode').value })
-  });
-  const items = await res.json();
-  $('searchResults').innerHTML = items.length
-    ? items.map(r => {
-        const extra = [
-          r.vectorScore != null ? `向量 ${r.vectorScore.toFixed(3)}` : null,
-          r.bm25Score != null ? `BM25 ${r.bm25Score.toFixed(3)}` : null
-        ].filter(Boolean).join(' · ');
-        return `<div class="ref"><div class="meta">📄 ${r.fileName}${r.pageNumber ? ` · 第 ${r.pageNumber} 页` : ''} · 得分 ${r.score.toFixed(4)}${extra ? ` · ${extra}` : ''}</div>${escapeHtml(r.text.slice(0, 300))}${r.text.length > 300 ? '…' : ''}</div>`;
-      }).join('')
-    : '<div class="empty">没有命中任何内容。</div>';
-}
-
-// ---------- AI 问答（SSE 流式） ----------
-async function doChat() {
-  const q = $('question').value.trim();
-  if (!q) return alert('请输入问题');
-  $('askBtn').disabled = true;
-  $('chatAnswer').style.display = 'block';
-  $('chatAnswer').innerHTML = '<span class="badge b-warn">🔍 检索知识库中…</span>';
-  $('chatSources').innerHTML = '';
-  $('chatRefs').innerHTML = '';
-
-  let modeBadge = '';
-  let answerText = '';
-  let pending = Promise.resolve();
-  const render = () => { $('chatAnswer').innerHTML = (modeBadge ? modeBadge + '<br><br>' : '') + escapeHtml(answerText); };
-
-  try {
-    const res = await fetch('/api/chat/stream', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: q, topK: +$('chatTopK').value || 8 })
-    });
-    if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      $('chatAnswer').textContent = e.message || `请求失败（${res.status}）`;
-      return;
-    }
-
-    // 解析 SSE 流（data: {...}\n\n 帧）
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let sse = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      sse += decoder.decode(value, { stream: true });
-      let idx;
-      while ((idx = sse.indexOf('\n\n')) >= 0) {
-        const frame = sse.slice(0, idx);
-        sse = sse.slice(idx + 2);
-        const line = frame.split('\n').find(l => l.startsWith('data: '));
-        if (!line) continue;
-        const evt = JSON.parse(line.slice(6));
-
-        if (evt.type === 'meta') {
-          // 检索完成，等待模型首字（此时还不知道最终模式）
-          pending = pending.then(() => { $('chatAnswer').innerHTML = '<span class="badge b-warn">🧠 模型生成中…</span>'; });
-        } else if (evt.type === 'mode') {
-          modeBadge = evt.mode === 'model'
-            ? '<span class="badge b-warn">🤖 大模型推理（知识库未命中）</span>'
-            : '<span class="badge b-ok">📚 知识库回答</span>';
-        } else if (evt.type === 'delta') {
-          answerText += evt.text || '';
-          pending = pending.then(render);
-        } else if (evt.type === 'end') {
-          if (!modeBadge) {
-            modeBadge = evt.mode === 'model'
-              ? '<span class="badge b-warn">🤖 大模型推理（知识库未命中）</span>'
-              : '<span class="badge b-ok">📚 知识库回答</span>';
-          }
-          // 以服务端 end 事件的完整文本为准（防丢块）
-          if (evt.text) { answerText = evt.text; }
-          $('chatSources').innerHTML = evt.sources?.length
-            ? '引用来源：' + evt.sources.map(s => `<span class="src">📄 ${s.fileName}${s.pageNumbers.length ? `（第 ${s.pageNumbers.join(', ')} 页）` : ''}</span>`).join('')
-            : '';
-          $('chatRefs').innerHTML = evt.references?.length
-            ? '<div class="hint" style="margin-top:10px">本次检索命中的切块：</div>' +
-              evt.references.map(r => `<div class="ref"><div class="meta">📄 ${r.fileName}${r.pageNumber ? ` · 第 ${r.pageNumber} 页` : ''} · 相似度 ${r.score.toFixed(4)}</div>${escapeHtml((r.text || '').slice(0, 200))}${(r.text || '').length > 200 ? '…' : ''}</div>`).join('')
-            : '';
-        }
+    async function refreshTasks() {
+      const res = await fetch('/api/knowledge/tasks');
+      tasks.value = await res.json();
+      const hasActive = tasks.value.some(t => t.status === 'Queued' || t.status === 'Processing');
+      if (hasActive && !taskPollTimer) {
+        taskPollTimer = setInterval(async () => {
+          await refreshTasks();
+          await loadDocuments();
+        }, 2000);
+      } else if (!hasActive && taskPollTimer) {
+        clearInterval(taskPollTimer);
+        taskPollTimer = null;
+        loadDocuments();
       }
     }
-    await pending;
-    render();
-  } catch (e) {
-    $('chatAnswer').innerHTML = (modeBadge ? modeBadge + '<br><br>' : '') + escapeHtml(answerText) + '<br><br>⚠️ 请求异常：' + escapeHtml(e.message);
-  } finally {
-    $('askBtn').disabled = false;
-  }
-}
 
-function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    async function loadDocuments() {
+      const res = await fetch('/api/knowledge/documents');
+      docs.value = await res.json();
+    }
 
-loadDocuments();
-refreshTasks();
+    async function uploadFiles() {
+      const files = fileList.value.map(f => f.raw).filter(Boolean);
+      if (!files.length) {
+        ElementPlus.ElMessage.warning('请先选择文件');
+        return;
+      }
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      uploading.value = true;
+      uploadResults.value = [];
+      try {
+        const res = await fetch('/api/knowledge/documents', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) {
+          ElementPlus.ElMessage.error(data.message || '上传失败');
+          return;
+        }
+        uploadResults.value = data.results.map(r => ({
+          type: r.status === 'accepted' ? 'success' : (r.status === 'duplicate' ? 'warning' : 'danger'),
+          text: r.fileName + '：' + (r.status === 'accepted' ? '已受理，后台导入中' : r.status === 'duplicate' ? '内容已存在，已过滤' : (r.message || '失败')),
+        }));
+        refreshTasks();
+      } catch (e) {
+        ElementPlus.ElMessage.error(e.message || '上传失败');
+      } finally {
+        uploading.value = false;
+      }
+    }
+
+    async function delDoc(id) {
+      try {
+        await ElementPlus.ElMessageBox.confirm('确认删除该文档及其全部向量？', '删除确认', {
+          type: 'warning',
+          confirmButtonText: '删除',
+          cancelButtonText: '取消',
+        });
+      } catch { return; }
+      const res = await fetch(`/api/knowledge/documents/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (res.status === 204) {
+        ElementPlus.ElMessage.success('已删除');
+        loadDocuments();
+      } else {
+        const e = await res.json().catch(() => ({}));
+        ElementPlus.ElMessage.error(e.message || '删除失败');
+      }
+    }
+
+    async function doSearch() {
+      const q = searchQuery.value.trim();
+      if (!q) {
+        ElementPlus.ElMessage.warning('请输入检索内容');
+        return;
+      }
+      searching.value = true;
+      searchEmpty.value = false;
+      searchResults.value = [];
+      try {
+        const res = await fetch('/api/knowledge/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q, topK: searchTopK.value || 5, mode: searchMode.value }),
+        });
+        const items = await res.json();
+        searchResults.value = items;
+        searchEmpty.value = !items.length;
+      } catch (e) {
+        ElementPlus.ElMessage.error(e.message || '检索失败');
+      } finally {
+        searching.value = false;
+      }
+    }
+
+    async function doChat() {
+      const q = question.value.trim();
+      if (!q) {
+        ElementPlus.ElMessage.warning('请输入问题');
+        return;
+      }
+      asking.value = true;
+      chatVisible.value = true;
+      chatStatus.value = '检索知识库中…';
+      chatMode.value = '';
+      chatAnswer.value = '';
+      chatSources.value = [];
+      chatRefs.value = [];
+
+      let mode = '';
+      let answerText = '';
+      try {
+        const res = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q, topK: chatTopK.value || 8 }),
+        });
+        if (!res.ok) {
+          const e = await res.json().catch(() => ({}));
+          chatAnswer.value = e.message || `请求失败（${res.status}）`;
+          chatStatus.value = '';
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let sse = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          sse += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = sse.indexOf('\n\n')) >= 0) {
+            const frame = sse.slice(0, idx);
+            sse = sse.slice(idx + 2);
+            const line = frame.split('\n').find(l => l.startsWith('data: '));
+            if (!line) continue;
+            const evt = JSON.parse(line.slice(6));
+            if (evt.type === 'meta') {
+              chatStatus.value = '模型生成中…';
+            } else if (evt.type === 'mode') {
+              mode = evt.mode;
+              chatMode.value = mode;
+              chatStatus.value = '';
+            } else if (evt.type === 'delta') {
+              answerText += evt.text || '';
+              chatAnswer.value = answerText;
+            } else if (evt.type === 'end') {
+              if (!mode) mode = evt.mode;
+              chatMode.value = mode;
+              chatStatus.value = '';
+              if (evt.text) {
+                answerText = evt.text;
+                chatAnswer.value = answerText;
+              }
+              chatSources.value = evt.sources || [];
+              chatRefs.value = evt.references || [];
+            }
+          }
+        }
+      } catch (e) {
+        chatAnswer.value = (answerText ? answerText + '\n\n' : '') + '请求异常：' + e.message;
+      } finally {
+        asking.value = false;
+      }
+    }
+
+    onMounted(() => {
+      loadDocuments();
+      refreshTasks();
+    });
+    onUnmounted(() => {
+      if (taskPollTimer) clearInterval(taskPollTimer);
+    });
+
+    return {
+      fileList, uploading, uploadResults, docs, tasks,
+      searchQuery, searchTopK, searchMode, searching, searchResults, searchEmpty,
+      question, chatTopK, asking, chatVisible, chatStatus, chatMode, chatAnswer, chatSources, chatRefs,
+      formatTime, formatClock, taskPct, statusLabel, statusType, fileTagLabel, fileTagType, preview,
+      onFileChange, onFileRemove, uploadFiles, loadDocuments, delDoc, doSearch, doChat,
+    };
+  },
+}).use(ElementPlus, (typeof ElementPlusLocaleZhCn !== 'undefined') ? { locale: ElementPlusLocaleZhCn } : {}).mount('#app');
 </script>
 </body>
 </html>
