@@ -20,29 +20,49 @@ public sealed class Bm25Index(QdrantClient qdrantClient, ILogger<Bm25Index> logg
     private Dictionary<string, List<(int Doc, int Tf)>> _postings = new(StringComparer.Ordinal);
     private double _avgdl;
     private bool _dirty = true;
+    private int _epoch;
 
     /// <summary>导入或删除切块后调用，下次检索会从 Qdrant 重建倒排。</summary>
     public void MarkDirty()
     {
         _lock.EnterWriteLock();
-        try { _dirty = true; }
+        try
+        {
+            _dirty = true;
+            _epoch++;
+        }
         finally { _lock.ExitWriteLock(); }
     }
 
-    /// <summary>若索引已脏或尚未建过，则滚动 Qdrant payload 重建倒排。</summary>
+    /// <summary>若索引已脏则重建。加载期间若再次 MarkDirty，会再扫一轮，避免用过期快照清掉脏标记。</summary>
     public async Task EnsureReadyAsync(CancellationToken cancellationToken = default)
     {
-        bool needRebuild;
-        _lock.EnterReadLock();
-        try { needRebuild = _dirty; }
-        finally { _lock.ExitReadLock(); }
+        while (true)
+        {
+            int epoch;
+            _lock.EnterReadLock();
+            try
+            {
+                if (!_dirty)
+                    return;
+                epoch = _epoch;
+            }
+            finally { _lock.ExitReadLock(); }
 
-        if (!needRebuild)
-            return;
-
-        var docs = await LoadChunksAsync(cancellationToken);
-        Rebuild(docs);
-        logger.LogInformation("BM25 索引已重建，共 {Count} 个切块。", docs.Count);
+            var docs = await LoadChunksAsync(cancellationToken);
+            _lock.EnterWriteLock();
+            try
+            {
+                RebuildUnlocked(docs);
+                if (_epoch == epoch)
+                {
+                    _dirty = false;
+                    logger.LogInformation("BM25 索引已重建，共 {Count} 个切块。", docs.Count);
+                    return;
+                }
+            }
+            finally { _lock.ExitWriteLock(); }
+        }
     }
 
     /// <summary>BM25 检索，返回切块与原始 BM25 分数。</summary>
@@ -98,8 +118,8 @@ public sealed class Bm25Index(QdrantClient qdrantClient, ILogger<Bm25Index> logg
         }
     }
 
-    /// <summary>用切块词频表重建倒排表与平均文档长度。</summary>
-    private void Rebuild(List<ChunkDoc> docs)
+    /// <summary>用切块词频表重建倒排表与平均文档长度（调用方须已持有写锁）。</summary>
+    private void RebuildUnlocked(List<ChunkDoc> docs)
     {
         var postings = new Dictionary<string, List<(int Doc, int Tf)>>(StringComparer.Ordinal);
         double totalLen = 0;
@@ -117,18 +137,9 @@ public sealed class Bm25Index(QdrantClient qdrantClient, ILogger<Bm25Index> logg
             }
         }
 
-        _lock.EnterWriteLock();
-        try
-        {
-            _docs = docs;
-            _postings = postings;
-            _avgdl = docs.Count == 0 ? 1 : totalLen / docs.Count;
-            _dirty = false;
-        }
-        finally
-        {
-            _lock.ExitWriteLock();
-        }
+        _docs = docs;
+        _postings = postings;
+        _avgdl = docs.Count == 0 ? 1 : totalLen / docs.Count;
     }
 
     /// <summary>只滚 payload、不取向量，避免重建 BM25 时把 embedding 全载入内存。</summary>

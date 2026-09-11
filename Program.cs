@@ -131,6 +131,7 @@ builder.Services.Configure<UpdateOptions>(builder.Configuration.GetSection(Updat
 // 混合检索：内存 BM25 + RRF 融合 + Cross-Encoder 形态重排（默认问答/检索走 rerank）
 builder.Services.Configure<RetrievalOptions>(builder.Configuration.GetSection(RetrievalOptions.SectionName));
 builder.Services.AddSingleton<Bm25Index>();
+builder.Services.AddSingleton<DocumentCatalog>();
 builder.Services.AddSingleton<CrossEncoderReranker>();
 // 1. 数据导入器：扫描上传目录，解析文档，生成向量并入库
 builder.Services.AddSingleton<DataIngestor>();

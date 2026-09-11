@@ -1,8 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using WebRagApi.Models;
-// 消除与 Microsoft.Extensions.AI.ChatResponse 的重名歧义：本项目 DTO 叫 ChatResponse
-using ChatResponse = WebRagApi.Models.ChatResponse;
 
 namespace WebRagApi.Services;
 
@@ -79,74 +77,6 @@ public class ChatService(
         4. 回答末尾请用一句话说明该答案依据了哪些文档（引用文档名和页码）。
         """;
 
-    public async Task<ChatResponse> ChatAsync(ChatRequest request, CancellationToken cancellationToken = default)
-    {
-        int topK = Math.Clamp(request.TopK <= 0 ? 10 : request.TopK, 1, 20);
-        bool allowModelAnswer = request.AllowModelAnswer ?? _allowModelAnswerDefault;
-
-        // 1. 向量检索相关切块（只做召回，不做相关性判定）
-        var references = await semanticSearch.SearchWithScoreAsync(request.Question, request.DocumentId, topK, cancellationToken);
-
-        // 2. 严格 RAG 模式（请求显式关闭大模型兜底）：只允许基于知识库回答
-        if (!allowModelAnswer)
-        {
-            var strictAnswer = references.Count == 0
-                ? "知识库中还没有找到与该问题相关的内容，也无法启用大模型推理（allowModelAnswer=false）。请先上传相关文档。"
-                : await GenerateAsync(BuildMessages(StrictKnowledgeBasePrompt, references, request), request, cancellationToken);
-            logger.LogInformation("RAG 问答完成（严格知识库模式）：问题='{Question}'，检索召回 {Count} 个切块。", request.Question, references.Count);
-            return new ChatResponse
-            {
-                Mode = "knowledge_base",
-                Answer = strictAnswer,
-                Sources = AggregateSources(references),
-                References = references,
-            };
-        }
-
-        // 3. 组装上下文并让模型回答（模型自行判断相关性，首行输出模式标记）
-        var messages = BuildMessages(SystemPrompt, references, request);
-        // 生成 
-        var rawAnswer = await GenerateAsync(messages, request, cancellationToken);
-
-        // 4. 解析首行标记 → 回答模式；标记行剥掉后再返回
-        // 注意先去掉开头的空行/空白，模型常在标记前输出换行
-        string mode;
-        string answer;
-        var trimmed = rawAnswer.TrimStart();
-        var firstLineEnd = trimmed.IndexOf('\n');
-        var firstLine = (firstLineEnd < 0 ? trimmed : trimmed[..firstLineEnd]).Trim();
-        if (firstLine.Contains(KnowledgeBaseMarker, StringComparison.Ordinal))
-        {
-            mode = "knowledge_base";
-            answer = firstLineEnd < 0 ? string.Empty : trimmed[(firstLineEnd + 1)..].TrimStart();
-        }
-        else if (firstLine.Contains(ModelMarker, StringComparison.Ordinal))
-        {
-            mode = "model";
-            answer = firstLineEnd < 0 ? string.Empty : trimmed[(firstLineEnd + 1)..].TrimStart();
-        }
-        else
-        {
-            // 模型没按格式输出标记：按相似度兜底判定，回答原样返回
-            var maxScore = references.Count > 0 ? references.Max(r => r.Score) : 0;
-            mode = maxScore >= 0.45 ? "knowledge_base" : "model";
-            answer = trimmed;
-            logger.LogWarning("模型回答缺少模式标记，按相似度兜底判定为 {Mode}（最高分 {MaxScore}）。", mode, maxScore);
-        }
-
-        logger.LogInformation("RAG 问答完成（{Mode}）：问题='{Question}'，检索召回 {Count} 个切块。",
-            mode, request.Question, references.Count);
-
-        return new ChatResponse
-        {
-            Mode = mode,
-            Answer = answer,
-            // 大模型推理模式没有知识库引用
-            Sources = mode == "knowledge_base" ? AggregateSources(references) : [],
-            References = mode == "knowledge_base" ? references : [],
-        };
-    }
-
     /// <summary>用知识库上下文构建消息（标注来源文档与页码，便于模型在回答中引用）</summary>
     private static List<ChatMessage> BuildMessages(string systemPrompt, List<SearchResultItem> chunks, ChatRequest request)
     {
@@ -184,20 +114,6 @@ public class ChatService(
         return messages;
     }
 
-    /// <summary>
-    /// 调用商汤 Nova 生成回答（一次性返回完整文本）。
-    /// </summary>
-    /// <param name="messages"></param>
-    /// <param name="request"></param>
-    /// <param name="cancellationToken"></param>
-    /// <returns></returns>
-    private async Task<string> GenerateAsync(List<ChatMessage> messages, ChatRequest request, CancellationToken cancellationToken)
-    {
-        var thinking = request.Thinking == true;
-        var result = await senseNova.CompleteAsync(ToLlmMessages(messages), thinking, request.ReasoningEffort, cancellationToken);
-        return result.Text;
-    }
-
     private static List<object> ToLlmMessages(List<ChatMessage> messages)
     {
         var list = new List<object>(messages.Count);
@@ -222,9 +138,10 @@ public class ChatService(
         if (references.Count == 0)
             return [];
 
-        var cutoff = Math.Max(0.5, references.Max(r => r.Score) - 0.15);
+        // 引用过滤用向量余弦（0~1），不用 RRF/重排分，避免尺子错位
+        var cutoff = Math.Max(0.5, references.Max(CitationScore) - 0.15);
         return references
-            .Where(r => r.Score >= cutoff)
+            .Where(r => CitationScore(r) >= cutoff)
             .GroupBy(r => r.DocumentId)
             .Select(g => new ChatSource
             {
@@ -315,29 +232,23 @@ public class ChatService(
 
             if (!modeResolved)
             {
-                // 先跳过模型输出开头的前导空白（标记前常有空行），再找首行
                 var text = buffer.ToString().TrimStart();
                 if (text.Length == 0)
                     continue;
 
-                int nl = text.IndexOf('\n');
-                if (nl >= 0)
-                {
-                    // 首行已完整：解析标记，标记行剥离后开始推增量
-                    mode = ResolveMode(text[..nl], references);
-                    modeResolved = true;
-                    yield return new ChatStreamEvent { Type = "mode", Mode = mode };
+                if (IsIncompleteMarkerPrefix(text))
+                    continue;
 
-                    var rest = text[(nl + 1)..].TrimStart();
-                    if (rest.Length > 0)
-                    {
-                        fullAnswer.Append(rest);
-                        yield return new ChatStreamEvent { Type = "delta", Text = rest };
-                    }
-                    // 注意：rest 已经推送过，缓冲区必须清空，否则下一块到来时 rest 会被重复推送
-                    buffer.Clear();
+                var parsed = ParseModeAndAnswer(text, references);
+                mode = parsed.Mode;
+                modeResolved = true;
+                yield return new ChatStreamEvent { Type = "mode", Mode = mode };
+                if (parsed.Answer.Length > 0)
+                {
+                    fullAnswer.Append(parsed.Answer);
+                    yield return new ChatStreamEvent { Type = "delta", Text = parsed.Answer };
                 }
-                // 首行还没到换行：继续缓冲（防止标记被拆成多个增量块）
+                buffer.Clear();
             }
             else if (buffer.Length > 0)
             {
@@ -347,22 +258,16 @@ public class ChatService(
             }
         }
 
-        // 3. 流结束还没解析到标记：整段没有换行（短回答）或模型没按格式输出
         if (!modeResolved)
         {
-            var full = buffer.ToString().TrimStart();
-            int nl = full.IndexOf('\n');
-            var firstLine = nl >= 0 ? full[..nl] : full;
-            mode = ResolveMode(firstLine, references);
+            var parsed = ParseModeAndAnswer(buffer.ToString(), references);
+            mode = parsed.Mode;
             modeResolved = true;
             yield return new ChatStreamEvent { Type = "mode", Mode = mode };
-
-            // 剥掉标记所在行，剩下的作为增量补推
-            var rest = nl >= 0 ? full[(nl + 1)..].TrimStart() : string.Empty;
-            if (rest.Length > 0)
+            if (parsed.Answer.Length > 0)
             {
-                fullAnswer.Append(rest);
-                yield return new ChatStreamEvent { Type = "delta", Text = rest };
+                fullAnswer.Append(parsed.Answer);
+                yield return new ChatStreamEvent { Type = "delta", Text = parsed.Answer };
             }
             buffer.Clear();
         }
@@ -392,18 +297,28 @@ public class ChatService(
         return senseNova.CompleteStreamAsync(ToLlmMessages(messages), thinking, request.ReasoningEffort, cancellationToken);
     }
 
-    /// <summary>从首行解析回答模式标记；未按格式输出时按最高相似度兜底判定</summary>
-    private string ResolveMode(string firstLine, List<SearchResultItem> references)
+    /// <summary>标记可在行首，同一行后面的正文保留；未输出标记时用向量余弦兜底。</summary>
+    private (string Mode, string Answer) ParseModeAndAnswer(string raw, List<SearchResultItem> references)
     {
-        var line = firstLine.Trim();
-        if (line.Contains(KnowledgeBaseMarker, StringComparison.Ordinal))
-            return "knowledge_base";
-        if (line.Contains(ModelMarker, StringComparison.Ordinal))
-            return "model";
+        var text = (raw ?? string.Empty).TrimStart();
+        if (text.StartsWith(KnowledgeBaseMarker, StringComparison.Ordinal))
+            return ("knowledge_base", StripMarker(text, KnowledgeBaseMarker));
+        if (text.StartsWith(ModelMarker, StringComparison.Ordinal))
+            return ("model", StripMarker(text, ModelMarker));
 
-        var maxScore = references.Count > 0 ? references.Max(r => r.Score) : 0;
+        var maxScore = references.Count > 0 ? references.Max(CitationScore) : 0;
         var fallback = maxScore >= 0.45 ? "knowledge_base" : "model";
-        logger.LogWarning("流式回答缺少模式标记，按相似度兜底判定为 {Mode}（最高分 {MaxScore}）。", fallback, maxScore);
-        return fallback;
+        logger.LogWarning("模型回答缺少模式标记，按向量分兜底判定为 {Mode}（最高分 {MaxScore}）。", fallback, maxScore);
+        return (fallback, text);
     }
+
+    private static string StripMarker(string text, string marker)
+        => text[marker.Length..].TrimStart('\r', '\n', ' ', '\t');
+
+    private static bool IsIncompleteMarkerPrefix(string text)
+        => KnowledgeBaseMarker.StartsWith(text, StringComparison.Ordinal)
+           || ModelMarker.StartsWith(text, StringComparison.Ordinal);
+
+    /// <summary>引用/兜底判定用向量余弦；没有向量分时才退回最终 Score。</summary>
+    private static double CitationScore(SearchResultItem r) => r.VectorScore ?? r.Score;
 }

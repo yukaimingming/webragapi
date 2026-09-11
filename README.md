@@ -36,8 +36,7 @@ dotnet run
 
 | 接口 | 方法 | 作用 |
 | ---- | ---- | ---- |
-| `/api/chat` | POST | AI 问答 + 返回引用来源（一次性返回完整 JSON） |
-| `/api/chat/stream` | POST | AI 问答流式版（SSE，`text/event-stream`） |
+| `/api/chat/stream` | POST | AI 流式问答（SSE）。`end` 事件含完整回答、`sources` 引用来源、`references` 召回切块 |
 | `/api/chat/config` | GET | 公开模型能力（不含 API Key） |
 | `/api/knowledge/documents` | POST | 上传文档（pdf/doc/docx/md，扫描件 png/jpg/jpeg/tif/bmp，多文件） |
 | `/api/knowledge/documents` | GET | 获取知识库文档列表 |
@@ -49,7 +48,7 @@ dotnet run
 
 ### 流式问答事件格式（/api/chat/stream）
 
-请求体与 `/api/chat` 相同，可额外带深度思考参数：
+请求体示例（可带深度思考参数）：
 
 ```json
 {
@@ -90,7 +89,7 @@ data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"referenc
   - 不相关（注意：领域相同 ≠ 相关，模型判断比相似度阈值可靠）→ 医疗健康问题由大模型基于自身医学知识直接推理（`mode = "model"`）；知识库也答不了的非医疗问题才礼貌拒答。
   - 请求参数 `allowModelAnswer: false` 可退回严格 RAG（只答知识库内容）。
 - **增量导入**：按**文件内容 SHA256** 去重（写入 Qdrant payload 的 `contenthash`）。内容相同即使文件名不同也会跳过；同名但字节变了会删除旧向量再导入。列表/删除仍用文件名当 `documentid`。
-- **批量入库**：本批待导入文件先全部解析切块，再按 `Knowledge:ChunkWriteBatchSize`（默认 32）跨文件批量 embedding 并 Upsert Qdrant；Ollama 再按 `Ollama:BatchSize`（默认 16）拆小批。
+- **批量入库**：按**文档提交**——一篇解析切块并 Upsert 成功后，再删该篇旧切块；失败只回滚本篇新点，不删其它文档。单篇内仍按 `Knowledge:ChunkWriteBatchSize`（默认 32）批量 embedding。导入任务全局串行，避免并行互踩。
 - **无需重启**：上传后后台异步导入（返回 taskId 可查进度），导入完成后立即可被检索/问答，不用重启服务。
 - **流式输出**：Demo 页与悬浮助手都走 `/api/chat/stream`（SSE）。悬浮助手（AI-Emr-Floating-Assistant）不再直连商汤。
 - **导入任务面板**：`GET /api/knowledge/tasks` 列出最近任务；文本提取与 OCR 都得不到内容时，会在任务明细中给出 0 切块警告。
@@ -190,7 +189,7 @@ Demo 页检索区可切换三种模式，结果里会带最终得分，以及可
 - 商汤接口返回空 `finish_reason` 的问题由 `FinishReasonRewriteHandler` 在 HTTP 层改写（复用 AIChatApp）。
 - 深度思考按商汤 OpenAI 兼容协议发送 `reasoning_effort`；开启时另附 `thinking.type=enabled`。思考内容识别 `delta.reasoning` / `delta.reasoning_content`。
 - Ollama 大批量 embedding 会压垮 runner，`BatchingEmbeddingGenerator` 自动拆小批（复用 AIChatApp）。
-- 对话接口只有 `/api/chat` 与 `/api/chat/stream`（另有 `/api/chat/config` 返回公开模型能力）。知识库管理接口见上表，不要删。
+- 对话接口只有 `/api/chat/stream`（另有 `/api/chat/config` 返回公开模型能力）。已去掉一次性 JSON 的 `POST /api/chat`。知识库管理接口见上表，不要删。
 
 ## 客户端自动更新
 

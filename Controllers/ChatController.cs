@@ -9,7 +9,7 @@ using WebRagApi.Services;
 namespace WebRagApi.Controllers;
 
 /// <summary>
-/// AI 问答：基于知识库的 RAG（一次性 JSON 与 SSE 流式）。
+/// AI 问答：仅提供 SSE 流式接口。引用来源在 end 事件的 sources / references 中。
 /// </summary>
 /// <remarks>
 /// 默认检索管道：向量 + BM25 → RRF 融合 → Cross-Encoder 形态重排。
@@ -43,30 +43,14 @@ public class ChatController(ChatService chatService) : ControllerBase
         });
     }
 
-    /// <summary>AI 问答：检索相关切块后由大模型生成回答，一次性返回完整 JSON。</summary>
-    /// <param name="request">问题与可选参数（TopK、文档过滤、多轮历史、深度思考）。</param>
-    /// <param name="cancellationToken">取消令牌。</param>
-    /// <returns>回答、模式（knowledge_base / model）、引用来源与检索明细。</returns>
-    /// <response code="200">问答成功。</response>
-    /// <response code="400">问题为空。</response>
-    [HttpPost]
-    [ProducesResponseType(typeof(ChatResponse), StatusCodes.Status200OK)]
-    [ProducesResponseType(StatusCodes.Status400BadRequest)]
-    public async Task<IActionResult> Chat([FromBody] ChatRequest request, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(request.Question))
-            return BadRequest(new { message = "问题不能为空。" });
-
-        var response = await chatService.ChatAsync(request, cancellationToken);
-        return Ok(response);
-    }
-
     /// <summary>AI 流式问答（SSE）。</summary>
     /// <remarks>
     /// 响应 Content-Type 为 text/event-stream。事件顺序：
-    /// meta（检索命中）→ mode（回答模式）→ reasoning（可选思考增量）→ delta（正文增量，多条）→ end（完整结果）。
+    /// meta（检索命中切块）→ mode（回答模式）→ reasoning（可选思考增量）→ delta（正文增量）→
+    /// end（完整回答 + sources 聚合引用 + references 召回明细）。
+    /// knowledge_base 时 end.sources 为按文档去重的引用来源（含页码）；model 时来源为空。
     /// </remarks>
-    /// <param name="request">与非流式问答相同的请求体。</param>
+    /// <param name="request">问题与可选参数（TopK、文档过滤、多轮历史、深度思考）。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <response code="200">SSE 事件流。</response>
     /// <response code="400">问题为空。</response>

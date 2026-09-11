@@ -4,6 +4,7 @@ using Microsoft.Extensions.DataIngestion;
 using Microsoft.Extensions.DataIngestion.Chunkers;
 using Microsoft.ML.Tokenizers;
 using Qdrant.Client;
+using Qdrant.Client.Grpc;
 using WebRagApi.Models;
 using WebRagApi.Services.Retrieval;
 
@@ -21,43 +22,63 @@ public class DataIngestor(
     IEmbeddingGenerator<string, Embedding<float>> embeddingGenerator,
     QdrantClient qdrantClient,
     Bm25Index bm25Index,
+    DocumentCatalog documentCatalog,
     IConfiguration configuration)
 {
     // 与 DocxReader 的 cl100k 分词保持一致
     private static readonly Tokenizer Tokenizer = TiktokenTokenizer.CreateForModel("gpt-3.5-turbo");
+    private readonly SemaphoreSlim _ingestGate = new(1, 1);
 
-    /// <summary>导入一批文件并实时更新任务进度</summary>
+    /// <summary>导入一批文件。全库同一时刻只跑一个导入任务，避免并行互踩。</summary>
     public async Task IngestFilesAsync(IngestionTask task, DirectoryInfo directory, IReadOnlyList<IngestionFileProgress> files)
     {
-        const int maxAttempts = 3;
-        for (int attempt = 1; ; attempt++)
+        await _ingestGate.WaitAsync();
+        try
         {
-            try
+            task.Status = IngestionTaskStatus.Processing;
+            await embeddingGenerator.GenerateAsync("warmup");
+
+            const int maxAttempts = 3;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                task.Status = IngestionTaskStatus.Processing;
-                await IngestCoreAsync(task, directory, files);
-                return;
+                var pending = files.Where(f => f.Status is IngestionFileStatus.Pending
+                    or IngestionFileStatus.Processing or IngestionFileStatus.Failed).ToList();
+                if (pending.Count == 0)
+                    break;
+
+                if (attempt > 1)
+                {
+                    logger.LogWarning("文档导入第 {Attempt} 次尝试，重试 {Count} 个失败文件。", attempt, pending.Count);
+                    task.Error = $"第 {attempt - 1} 次未全部成功，正在重试剩余文件…";
+                    foreach (var f in pending)
+                        f.Status = IngestionFileStatus.Pending;
+                    await Task.Delay(TimeSpan.FromSeconds(3));
+                }
+
+                await IngestPendingAsync(task, directory, pending);
             }
-            catch (Exception ex) when (attempt < maxAttempts)
-            {
-                // Ollama 冷启动/偶发 400 时重试整个批次（已成功的文件在下一轮会被去重跳过）
-                logger.LogWarning(ex, "文档导入第 {Attempt} 次尝试失败，准备重试...", attempt);
-                task.Error = $"第 {attempt} 次尝试失败：{ex.Message}，正在重试...";
-                await Task.Delay(TimeSpan.FromSeconds(3));
-            }
+        }
+        finally
+        {
+            _ingestGate.Release();
         }
     }
 
-    private async Task IngestCoreAsync(IngestionTask task, DirectoryInfo directory, IReadOnlyList<IngestionFileProgress> files)
+    /// <summary>按文档提交：一篇写成功后再删旧切块；失败只回滚本篇新点。</summary>
+    private async Task IngestPendingAsync(IngestionTask task, DirectoryInfo directory, List<IngestionFileProgress> files)
     {
-        // 预热：先发一个小请求确保 Ollama 模型加载完毕，避免首次大请求碰到 runner 未就绪的 400
-        await embeddingGenerator.GenerateAsync("warmup");
+        int writeBatchSize = configuration.GetValue("Knowledge:ChunkWriteBatchSize", 32);
+        var reader = new DocumentReader(directory, loggerFactory);
+        var chunker = new SemanticSimilarityChunker(embeddingGenerator, new IngestionChunkerOptions(Tokenizer)
+        {
+            MaxTokensPerChunk = 1024,
+            OverlapTokens = 50,
+        });
 
-        // 按内容哈希去重；上传阶段已标 Skipped/Failed 的不再处理
-        var newFiles = new List<FileInfo>();
+        bool anyImported = false;
         foreach (var progress in files)
         {
-            if (progress.Status is IngestionFileStatus.Skipped or IngestionFileStatus.Failed)
+            if (progress.Status is IngestionFileStatus.Skipped or IngestionFileStatus.Imported)
                 continue;
 
             var filePath = Path.Combine(directory.FullName, progress.FileName);
@@ -72,7 +93,6 @@ public class DataIngestor(
                 hash = ContentHash.Sha256File(filePath);
             progress.ContentHash = hash;
 
-            // 内容已经在库里（哪怕文件名不同）→ 跳过
             var existingByHash = await FindDocumentIdByContentHashAsync(hash);
             if (existingByHash is not null)
             {
@@ -81,97 +101,62 @@ public class DataIngestor(
                 continue;
             }
 
-            // 同名但哈希不同：旧文件被替换，删掉旧向量再导入新内容
-            if (await DocumentExistsAsync(progress.DocumentId))
-            {
-                await qdrantClient.DeleteAsync(QdrantChunkWriter.CollectionName, DocumentFilter(progress.DocumentId));
-                logger.LogInformation("文档 '{Id}' 内容已变化，已删除旧向量，将按新内容导入。", progress.DocumentId);
-            }
-
-            newFiles.Add(new FileInfo(filePath));
-        }
-
-        task.ProcessedFiles = files.Count(f => f.Status is not (IngestionFileStatus.Pending or IngestionFileStatus.Processing));
-        if (newFiles.Count == 0)
-        {
-            logger.LogInformation("所有文档均已存在或无有效文件，无需导入。");
-            return;
-        }
-
-        logger.LogInformation("待导入新文档 {Count} 个：{Files}", newFiles.Count, string.Join(", ", newFiles.Select(f => f.Name)));
-
-        // 文件级元数据：写入器在写切块 payload 时顺带补上，供列表/详情接口聚合
-        var fileMeta = newFiles.ToDictionary(
-            f => f.Name,
-            f =>
-            {
-                var p = files.First(x => x.FileName == f.Name);
-                return (Size: f.Length, UploadedAt: DateTimeOffset.Now, ContentHash: p.ContentHash ?? "");
-            });
-
-        int writeBatchSize = configuration.GetValue("Knowledge:ChunkWriteBatchSize", 32);
-        var writer = new QdrantChunkWriter(embeddingGenerator, qdrantClient,
-            loggerFactory.CreateLogger<QdrantChunkWriter>(), fileMeta, writeBatchSize);
-        await writer.EnsureCollectionAsync();
-
-        var chunkerOptions = new IngestionChunkerOptions(Tokenizer)
-        {
-            MaxTokensPerChunk = 1024,
-            OverlapTokens = 50
-        };
-
-        // 先把本批文件全部解析+切块，再一次性交给写入器按批向量化入库。
-        // 旧管道是「一个文件走完再处理下一个」，小文件无法拼进同一 embedding/Qdrant 批次。
-        var reader = new DocumentReader(directory, loggerFactory);
-        var chunker = new SemanticSimilarityChunker(embeddingGenerator, chunkerOptions);
-        var allChunks = new List<IngestionChunk<string>>();
-        var parsedOk = new List<IngestionFileProgress>();
-
-        logger.LogInformation("开始解析切块 {Count} 个文档，随后按每批 {Batch} 条向量化入库。",
-            newFiles.Count, writeBatchSize);
-
-        foreach (var file in newFiles)
-        {
-            var progress = files.First(x => x.FileName == file.Name);
             progress.Status = IngestionFileStatus.Processing;
             if (progress.Task is not null)
-                progress.Task.CurrentFile = file.Name;
+                progress.Task.CurrentFile = progress.FileName;
 
+            var file = new FileInfo(filePath);
+            var fileMeta = new Dictionary<string, (long Size, DateTimeOffset UploadedAt, string ContentHash)>
+            {
+                [file.Name] = (file.Length, DateTimeOffset.Now, hash),
+            };
+            var writer = new QdrantChunkWriter(embeddingGenerator, qdrantClient,
+                loggerFactory.CreateLogger<QdrantChunkWriter>(), fileMeta, writeBatchSize);
+
+            List<Guid> oldIds;
             try
             {
+                oldIds = await ListPointIdsAsync(progress.DocumentId);
                 var document = await reader.ReadAsync(file, file.Name);
+                var chunks = new List<IngestionChunk<string>>();
                 await foreach (var chunk in chunker.ProcessAsync(document))
-                    allChunks.Add(chunk);
-                parsedOk.Add(progress);
+                    chunks.Add(chunk);
+
+                if (chunks.Count == 0)
+                {
+                    MarkFile(progress, IngestionFileStatus.Imported,
+                        "成功但解析到 0 个切块——文本提取与 OCR 均未得到可用内容，无法被检索和提问", 0);
+                    continue;
+                }
+
+                await writer.EnsureCollectionAsync();
+                await writer.WriteAsync(ToAsyncEnumerable(chunks));
+
+                // 新切块已成功：再删旧点，避免先删后写失败丢知识
+                if (oldIds.Count > 0)
+                {
+                    await qdrantClient.DeleteAsync(QdrantChunkWriter.CollectionName, oldIds);
+                    logger.LogInformation("文档 '{Id}' 新切块已提交，已删除 {Count} 个旧切块。", progress.DocumentId, oldIds.Count);
+                }
+
+                var chunkCount = await CountChunksAsync(progress.DocumentId);
+                MarkFile(progress, IngestionFileStatus.Imported, null, chunkCount);
+                anyImported = true;
+                logger.LogInformation("文档 '{id}' 导入完成，共 {Count} 个切块。", progress.DocumentId, chunkCount);
             }
             catch (Exception ex)
             {
+                logger.LogWarning(ex, "文档 '{id}' 导入失败（旧切块已保留）。", progress.DocumentId);
                 MarkFile(progress, IngestionFileStatus.Failed, ex.Message);
-                logger.LogWarning(ex, "文档 '{id}' 解析/切块失败。", progress.DocumentId);
             }
         }
 
-        if (allChunks.Count > 0)
+        if (anyImported)
         {
-            logger.LogInformation("解析完成，共 {ChunkCount} 个切块来自 {DocCount} 个文档，开始批量向量化入库。",
-                allChunks.Count, parsedOk.Count);
-            await writer.WriteAsync(ToAsyncEnumerable(allChunks));
-        }
-
-        foreach (var progress in parsedOk)
-        {
-            var chunkCount = await CountChunksAsync(progress.DocumentId);
-            string? warning = chunkCount == 0
-                ? "成功但解析到 0 个切块——文本提取与 OCR 均未得到可用内容，无法被检索和提问"
-                : null;
-            MarkFile(progress, IngestionFileStatus.Imported, warning, chunkCount);
-            logger.LogInformation("文档 '{id}' 导入完成，共 {Count} 个切块。{Warning}",
-                progress.DocumentId, chunkCount, warning ?? "");
-        }
-
-        // 有新切块入库后让 BM25 倒排失效，下次检索再从 Qdrant 重建
-        if (files.Any(f => f.Status == IngestionFileStatus.Imported))
             bm25Index.MarkDirty();
+            documentCatalog.MarkDirty();
+            _ = Task.Run(() => bm25Index.EnsureReadyAsync());
+        }
     }
 
     private static async IAsyncEnumerable<IngestionChunk<string>> ToAsyncEnumerable(IEnumerable<IngestionChunk<string>> chunks)
@@ -184,13 +169,52 @@ public class DataIngestor(
     /// <summary>把处理结果写回进度对象，并推进任务级计数</summary>
     private void MarkFile(IngestionFileProgress progress, IngestionFileStatus status, string? error = null, int chunkCount = 0)
     {
-        bool wasProcessed = progress.Status is not (IngestionFileStatus.Pending or IngestionFileStatus.Processing);
         progress.Status = status;
         progress.Error = error;
         progress.ChunkCount = chunkCount;
-        if (!wasProcessed && progress.Task is not null)
-            progress.Task.ProcessedFiles++;
-        progress.Task!.CurrentFile = null;
+        if (progress.Task is not null)
+        {
+            progress.Task.ProcessedFiles = progress.Task.Files.Count(f =>
+                f.Status is not (IngestionFileStatus.Pending or IngestionFileStatus.Processing));
+            progress.Task.CurrentFile = null;
+        }
+    }
+
+    /// <summary>列出某文档当前切块的点 ID，供覆盖导入时「先写新再删旧」。</summary>
+    public async Task<List<Guid>> ListPointIdsAsync(string documentId)
+    {
+        var ids = new List<Guid>();
+        PointId? offset = null;
+        while (true)
+        {
+            ScrollResponse response;
+            try
+            {
+                response = await qdrantClient.ScrollAsync(
+                    QdrantChunkWriter.CollectionName,
+                    filter: DocumentFilter(documentId),
+                    limit: 1000,
+                    offset: offset,
+                    payloadSelector: false);
+            }
+            catch (Grpc.Core.RpcException ex) when (ex.StatusCode == Grpc.Core.StatusCode.NotFound)
+            {
+                return ids;
+            }
+
+            var list = response.Result.ToList();
+            if (list.Count == 0)
+                break;
+            foreach (var p in list)
+            {
+                if (p.Id.HasUuid && Guid.TryParse(p.Id.Uuid, out var g))
+                    ids.Add(g);
+            }
+            if (list.Count < 1000 || response.NextPageOffset is null)
+                break;
+            offset = response.NextPageOffset;
+        }
+        return ids;
     }
 
     /// <summary>构造按文档标识过滤的 Qdrant 检索条件（新版客户端必须用 Condition 包裹 FieldCondition）</summary>

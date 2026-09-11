@@ -26,7 +26,8 @@ public class QdrantChunkWriter(
     // 每批向量化/写入的切块数；Ollama 侧还会再按 Ollama:BatchSize 拆小批
     private readonly int _batchSize = Math.Clamp(batchSize, 1, 128);
 
-    private readonly List<string> _seenDocumentIds = [];
+    /// <summary>本次 WriteAsync 已成功 Upsert 的点 ID。失败回滚只删这些点，不动同 documentid 的旧切块。</summary>
+    public List<Guid> WrittenPointIds { get; } = [];
 
     /// <summary>确保集合存在（1024 维、余弦距离）</summary>
     public async Task EnsureCollectionAsync(CancellationToken ct = default)
@@ -54,24 +55,46 @@ public class QdrantChunkWriter(
     public override async Task WriteAsync(IAsyncEnumerable<IngestionChunk<string>> chunks, CancellationToken cancellationToken = default)
     {
         await EnsureCollectionAsync(cancellationToken);
+        WrittenPointIds.Clear();
 
         var batch = new List<IngestionChunk<string>>(_batchSize);
-        await foreach (var chunk in chunks.WithCancellation(cancellationToken))
+        try
         {
-            var docId = chunk.Document.Identifier;
-            if (!_seenDocumentIds.Contains(docId))
-                _seenDocumentIds.Add(docId);
-
-            batch.Add(chunk);
-            if (batch.Count >= _batchSize)
+            await foreach (var chunk in chunks.WithCancellation(cancellationToken))
             {
-                await WriteBatchAsync(batch, cancellationToken);
-                batch.Clear();
+                batch.Add(chunk);
+                if (batch.Count >= _batchSize)
+                {
+                    await WriteBatchAsync(batch, cancellationToken);
+                    batch.Clear();
+                }
             }
-        }
 
-        if (batch.Count > 0)
-            await WriteBatchAsync(batch, cancellationToken);
+            if (batch.Count > 0)
+                await WriteBatchAsync(batch, cancellationToken);
+        }
+        catch
+        {
+            await RollbackWrittenAsync();
+            throw;
+        }
+    }
+
+    /// <summary>删除本次写入的新点，保留同文档旧切块。</summary>
+    public async Task RollbackWrittenAsync()
+    {
+        if (WrittenPointIds.Count == 0)
+            return;
+        try
+        {
+            await qdrantClient.DeleteAsync(CollectionName, WrittenPointIds);
+            logger.LogWarning("已回滚本次新写入的 {Count} 个切块。", WrittenPointIds.Count);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "回滚新切块失败，可能留下不完整文档。");
+        }
+        WrittenPointIds.Clear();
     }
 
     /// <summary>把一批切块向量化并 Upsert 到 Qdrant。失败时清理已写入的部分，保证不留半成品文档</summary>
@@ -110,9 +133,11 @@ public class QdrantChunkWriter(
                 if (TryGetPageNumber(chunk, out var pageNumber))
                     payload["page_number"] = new() { IntegerValue = pageNumber };
 
+                var id = Guid.NewGuid();
+                WrittenPointIds.Add(id);
                 points.Add(new PointStruct
                 {
-                    Id = Guid.NewGuid(),
+                    Id = id,
                     Vectors = new Vectors { Vector = new Vector { Data = { embeddings[i].Vector.ToArray() } } },
                     Payload = { payload },
                 });
@@ -124,12 +149,7 @@ public class QdrantChunkWriter(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "切块写入 Qdrant 失败，清理本次已写入的文档，避免留下不完整数据。");
-            foreach (var docId in _seenDocumentIds)
-            {
-                try { await qdrantClient.DeleteAsync(CollectionName, DataIngestor.DocumentFilter(docId)); }
-                catch { /* 清理失败不影响主异常抛出 */ }
-            }
+            logger.LogError(ex, "切块写入 Qdrant 失败。");
             throw;
         }
     }

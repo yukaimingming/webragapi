@@ -197,7 +197,7 @@ public class SearchResultItem
     public int? PageNumber { get; set; }
 }
 
-/// <summary>POST /api/chat 请求</summary>
+/// <summary>POST /api/chat/stream 请求</summary>
 public class ChatRequest
 {
     /// <summary>用户问题</summary>
@@ -234,23 +234,7 @@ public class ChatHistoryMessage
     public required string Content { get; set; }
 }
 
-/// <summary>POST /api/chat 响应：答案 + 引用来源</summary>
-public class ChatResponse
-{
-    /// <summary>回答模式：knowledge_base=基于知识库回答（带引用）；model=知识库未命中，由大模型直接推理</summary>
-    public required string Mode { get; set; }
-
-    /// <summary>AI 生成的回答（Markdown 格式）</summary>
-    public required string Answer { get; set; }
-
-    /// <summary>回答引用的来源文档（按文档去重；model 模式下为空）</summary>
-    public required List<ChatSource> Sources { get; set; }
-
-    /// <summary>本次检索命中的切块明细（含相似度得分；model 模式下为空）</summary>
-    public required List<SearchResultItem> References { get; set; }
-}
-
-/// <summary>回答引用的来源（按文档聚合）</summary>
+/// <summary>回答引用的来源（按文档聚合，出现在 SSE end 事件的 sources）</summary>
 public class ChatSource
 {
     /// <summary>文档标识（文件名）</summary>

@@ -19,7 +19,8 @@ public class KnowledgeService(
     IngestionTaskManager taskManager,
     IHostEnvironment environment,
     IConfiguration configuration,
-    Bm25Index bm25Index)
+    Bm25Index bm25Index,
+    DocumentCatalog documentCatalog)
 {
     /// <summary>上传文档存放目录（相对于项目根目录，默认 App_Data/Documents）</summary>
     public DirectoryInfo DocumentsDirectory { get; } =
@@ -35,7 +36,6 @@ public class KnowledgeService(
         DocumentsDirectory.Create();
 
         var progresses = new List<IngestionFileProgress>();
-        var toSave = new List<(byte[] Bytes, string SafeName, string Hash)>();
 
         foreach (var file in files)
         {
@@ -66,15 +66,18 @@ public class KnowledgeService(
                 continue;
             }
 
-            await using var upload = file.OpenReadStream();
-            using var buffer = new MemoryStream();
-            await upload.CopyToAsync(buffer);
-            var hash = ContentHash.Sha256Hex(buffer);
+            var partPath = Path.Combine(DocumentsDirectory.FullName, $".{Guid.NewGuid():N}.part");
+            string hash;
+            await using (var upload = file.OpenReadStream())
+            await using (var part = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
+            {
+                hash = await ContentHash.CopyAndHashAsync(upload, part);
+            }
 
-            // 内容哈希已在库中：直接跳过，不覆盖磁盘、不进导入队列
             var existing = await dataIngestor.FindDocumentIdByContentHashAsync(hash);
             if (existing is not null)
             {
+                try { File.Delete(partPath); } catch { /* 临时文件 */ }
                 progresses.Add(new IngestionFileProgress
                 {
                     FileName = safeName,
@@ -86,20 +89,14 @@ public class KnowledgeService(
                 continue;
             }
 
-            toSave.Add((buffer.ToArray(), safeName, hash));
+            var targetPath = Path.Combine(DocumentsDirectory.FullName, safeName);
+            File.Move(partPath, targetPath, overwrite: true);
             progresses.Add(new IngestionFileProgress
             {
                 FileName = safeName,
                 DocumentId = safeName,
                 ContentHash = hash,
             });
-        }
-
-        // 先落盘再注册任务：后台导入直接读取磁盘文件
-        foreach (var (bytes, safeName, _) in toSave)
-        {
-            var targetPath = Path.Combine(DocumentsDirectory.FullName, safeName);
-            await File.WriteAllBytesAsync(targetPath, bytes);
         }
 
         var task = taskManager.CreateTask("upload", progresses);
@@ -189,26 +186,7 @@ public class KnowledgeService(
 
     /// <summary>获取知识库全部文档列表（滚动 Qdrant 全部切块并按文档聚合）</summary>
     public async Task<List<DocumentInfo>> ListDocumentsAsync()
-    {
-        var points = await ScrollAllAsync();
-        return points
-            .GroupBy(p => GetPayloadString(p, "documentid") ?? "(未知)")
-            .Select(g =>
-            {
-                var first = g.First();
-                var meta = ParseMeta(first.Payload);
-                return new DocumentInfo
-                {
-                    DocumentId = g.Key,
-                    FileName = meta.FileName ?? g.Key,
-                    FileSize = meta.FileSize,
-                    UploadedAt = meta.UploadedAt,
-                    ChunkCount = g.Count(),
-                };
-            })
-            .OrderByDescending(d => d.UploadedAt)
-            .ToList();
-    }
+        => await documentCatalog.ListAsync();
 
     /// <summary>查看文档详情（含切块预览）</summary>
     public async Task<DocumentDetail?> GetDocumentAsync(string documentId)
@@ -262,6 +240,7 @@ public class KnowledgeService(
 
         // 向量已删，BM25 倒排也要重建，否则还会搜到已删文档
         bm25Index.MarkDirty();
+        documentCatalog.MarkDirty();
         logger.LogInformation("文档 '{DocumentId}' 已删除（{Count} 个切块）。", documentId, chunkCount);
         return true;
     }

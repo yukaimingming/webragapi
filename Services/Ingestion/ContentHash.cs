@@ -24,4 +24,20 @@ internal static class ContentHash
         using var fs = File.OpenRead(path);
         return Sha256Hex(fs);
     }
+
+    /// <summary>边读边写边哈希，避免大文件整份进内存。</summary>
+    public static async Task<string> CopyAndHashAsync(Stream source, Stream destination, CancellationToken cancellationToken = default)
+    {
+        using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[81920];
+        while (true)
+        {
+            int n = await source.ReadAsync(buffer, cancellationToken);
+            if (n == 0)
+                break;
+            sha.AppendData(buffer.AsSpan(0, n));
+            await destination.WriteAsync(buffer.AsMemory(0, n), cancellationToken);
+        }
+        return Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+    }
 }
