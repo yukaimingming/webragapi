@@ -213,7 +213,7 @@ GET /api/update/manifest?platform=win-x64&channel=stable
 GET /api/update/manifest?platform=win32-x64&channel=stable
 ```
 
-更新包直接放在 `wwwroot/updates` 下，由 WebAPI 以静态 ZIP 文件提供下载。服务器不需要解压更新包；客户端负责下载、校验 SHA256、备份旧文件、解压替换并在失败时自动回滚旧版本。客户端本机的 `appsettings.json` 与 `prompts.json`（医生维护的科室模板）都不会被更新包覆盖。
+更新包直接放在 `wwwroot/updates` 下，由 WebAPI 以静态 ZIP 文件提供下载。该目录的 `*.zip` **不进 Git**（`.gitignore`）：WPF 包已超过 GitHub 单文件 100MB 上限。克隆仓库后需自行把 zip 拷进 `wwwroot/updates`。服务器不需要解压更新包；客户端负责下载、校验 SHA256、备份旧文件、解压替换并在失败时自动回滚旧版本。客户端本机的 `appsettings.json` 与 `prompts.json`（医生维护的科室模板）都不会被更新包覆盖。
 
 ### 接口行为（2026-09 优化）
 
