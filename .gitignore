@@ -20,3 +20,9 @@ tessdata/eng.traineddata
 
 # 客户端更新包体积较大，生产环境由文件服务器或 WebAPI 静态目录提供，不提交到 Git。
 wwwroot/updates/*.zip
+
+# 发布/部署产物（linux-x64 发布输出与部署打包文件，需要时用 dotnet publish 重新生成）
+publish-linux*/
+publish*.tar.gz
+deploy-full.tar.gz
+deploy/

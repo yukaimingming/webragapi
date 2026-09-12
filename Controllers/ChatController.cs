@@ -68,7 +68,9 @@ public class ChatController(ChatService chatService) : ControllerBase
         }
 
         Response.ContentType = "text/event-stream; charset=utf-8";
-        Response.Headers.CacheControl = "no-cache";
+        Response.Headers.CacheControl = "no-cache, no-transform";
+        Response.Headers.Append("X-Accel-Buffering", "no");
+        HttpContext.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpResponseBodyFeature>()?.DisableBuffering();
 
         var buffer = new StringBuilder();
         await foreach (var evt in chatService.ChatStreamAsync(request, cancellationToken))

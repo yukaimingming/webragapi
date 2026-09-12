@@ -82,6 +82,10 @@ data: {"type":"end","mode":"...","text":"完整回答","sources":[...],"referenc
 前端用 `fetch` + `ReadableStream` 读取（`EventSource` 只支持 GET）；`references`/`sources` 中，
 `sources` 只含与最高分切块接近的真正回答依据（分差 ≤0.15 且分数 ≥0.5），`references` 保留完整召回列表供调试。
 
+**SSE 防缓冲**（2026-09）：`/api/chat/stream` 响应已加 `Cache-Control: no-cache, no-transform`、
+`X-Accel-Buffering: no`，并在服务端调用 `DisableBuffering()`——部署在 nginx/IIS 等反向代理后面时，
+SSE 事件也会即时推送，不会被代理缓冲到请求结束才一次性下发。
+
 ## 行为说明
 
 - **问答策略（智慧病历模式）**：检索到的切块始终交给大模型，由模型判断语义相关性后二选一——
@@ -146,6 +150,10 @@ Demo 页检索区可切换三种模式，结果里会带最终得分，以及可
 ## Demo 页（wwwroot/index.html）
 
 首页用 Vue 3 + Element Plus。功能与接口一致：拖拽上传、文档列表（含文档名）、导入任务轮询、三种检索模式、SSE 问答。问答卡片标题栏右侧有「发送」按钮（Ctrl+Enter 也可发）。CDN 加载 unpkg 上的 Vue / Element Plus。
+
+2026-09 更新：SSE 事件解析同时兼容 camelCase / PascalCase 字段（`evt.text` / `evt.Text`），
+检索区新增模式下拉（仅向量 / 向量+BM25+RRF / RRF+重排）与 TopK 选择，结果展示最终得分及
+可选的向量 / BM25 分项；任务面板加进度条与空状态；回答区改用 `<pre>` 保留换行格式。
 
 ## Scalar 接口文档
 
