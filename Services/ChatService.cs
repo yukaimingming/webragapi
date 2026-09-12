@@ -1,4 +1,3 @@
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 using WebRagApi.Models;
 
@@ -77,14 +76,39 @@ public class ChatService(
         4. 回答末尾请用一句话说明该答案依据了哪些文档（引用文档名和页码）。
         """;
 
-    /// <summary>用知识库上下文构建消息（标注来源文档与页码，便于模型在回答中引用）</summary>
-    private static List<ChatMessage> BuildMessages(string systemPrompt, List<SearchResultItem> chunks, ChatRequest request)
+    public static bool HasImages(ChatRequest request) => ResolveImages(request).Count > 0;
+
+    /// <summary>从 Images 或 messages 最后一条 user 提取图片（data URL / https / 裸 base64）。</summary>
+    public static List<string> ResolveImages(ChatRequest request)
     {
+        if (request.Images is { Count: > 0 })
+            return request.Images.Where(static x => !string.IsNullOrWhiteSpace(x)).ToList();
+        if (request.Messages is { Count: > 0 })
+        {
+            for (int i = request.Messages.Count - 1; i >= 0; i--)
+            {
+                var m = request.Messages[i];
+                if (!string.Equals(m.Role, "user", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (m.Images is { Count: > 0 })
+                    return m.Images.Where(static x => !string.IsNullOrWhiteSpace(x)).ToList();
+                break;
+            }
+        }
+        return [];
+    }
+
+    /// <summary>按商汤文档组装 messages：文本为 string，带图时 content 为 text + image_url 块数组。</summary>
+    private List<object> BuildLlmMessages(string systemPrompt, List<SearchResultItem> chunks, ChatRequest request)
+    {
+        var images = ResolveImages(request);
+        var question = string.IsNullOrWhiteSpace(request.Question)
+            ? (images.Count > 0 ? "请根据图片内容作答。" : "")
+            : request.Question.Trim();
+
         var contextBuilder = new System.Text.StringBuilder();
         if (chunks.Count == 0)
-        {
             contextBuilder.AppendLine("（知识库为空或没有检索到任何内容）");
-        }
         else
         {
             foreach (var (item, index) in chunks.Select((v, i) => (v, i + 1)))
@@ -97,34 +121,78 @@ public class ChatService(
             }
         }
 
-        var messages = new List<ChatMessage> { new(ChatRole.System, systemPrompt) };
+        var system = systemPrompt;
+        if (images.Count > 0)
+            system += "\n\n用户消息中附有图片（image_url）。必须结合图片内容回答，禁止说看不到图片或没有图片。";
+
+        var list = new List<object>
+        {
+            new Dictionary<string, object?> { ["role"] = "system", ["content"] = system },
+        };
+
         if (request.History is { Count: > 0 })
         {
             foreach (var h in request.History.TakeLast(6))
-                messages.Add(new ChatMessage(h.Role == "assistant" ? ChatRole.Assistant : ChatRole.User, h.Content));
+            {
+                var role = string.Equals(h.Role, "assistant", StringComparison.OrdinalIgnoreCase) ? "assistant" : "user";
+                list.Add(new Dictionary<string, object?>
+                {
+                    ["role"] = role,
+                    ["content"] = BuildContent(h.Content, h.Images),
+                });
+            }
         }
-        messages.Add(new ChatMessage(ChatRole.User,
-            $"""
+
+        var userText = $"""
             【知识库上下文】
             {contextBuilder}
 
             【用户问题】
-            {request.Question}
-            """));
-        return messages;
+            {question}
+            """;
+        list.Add(new Dictionary<string, object?>
+        {
+            ["role"] = "user",
+            ["content"] = BuildContent(userText, images),
+        });
+
+        if (images.Count > 0)
+            logger.LogInformation("已把 {Count} 张图片转为 image_url 发给商汤（问题长度 {Len}）。", images.Count, question.Length);
+
+        return list;
     }
 
-    private static List<object> ToLlmMessages(List<ChatMessage> messages)
+    /// <summary>无图则纯文本；有图则按商汤协议：[{type:text},{type:image_url,image_url:{url:data:image/...;base64,...}}]</summary>
+    internal static object BuildContent(string? text, List<string>? images)
     {
-        var list = new List<object>(messages.Count);
-        foreach (var m in messages)
+        var urls = (images ?? []).Select(NormalizeImageUrl).Where(static u => u.Length > 0).ToList();
+        if (urls.Count == 0)
+            return text ?? "";
+
+        var parts = new List<object>();
+        if (!string.IsNullOrWhiteSpace(text))
+            parts.Add(new Dictionary<string, object?> { ["type"] = "text", ["text"] = text });
+        foreach (var url in urls)
         {
-            var role = m.Role == ChatRole.System ? "system"
-                : m.Role == ChatRole.Assistant ? "assistant"
-                : "user";
-            list.Add(new Dictionary<string, object?> { ["role"] = role, ["content"] = m.Text ?? "" });
+            parts.Add(new Dictionary<string, object?>
+            {
+                ["type"] = "image_url",
+                ["image_url"] = new Dictionary<string, object?> { ["url"] = url },
+            });
         }
-        return list;
+        return parts;
+    }
+
+    internal static string NormalizeImageUrl(string? raw)
+    {
+        var s = (raw ?? "").Trim();
+        if (s.Length == 0) return "";
+        if (s.StartsWith("data:image", StringComparison.OrdinalIgnoreCase)) return s;
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return s;
+        var mime = s.StartsWith("iVBORw0KGgo", StringComparison.Ordinal) ? "image/png" : "image/jpeg";
+        return $"data:{mime};base64,{s}";
     }
 
     /// <summary>
@@ -165,8 +233,15 @@ public class ChatService(
         int topK = Math.Clamp(request.TopK <= 0 ? 8 : request.TopK, 1, 20);
         bool allowModelAnswer = request.AllowModelAnswer ?? _allowModelAnswerDefault;
 
+        var images = ResolveImages(request);
+        var searchQuery = string.IsNullOrWhiteSpace(request.Question)
+            ? (images.Count > 0 ? "请根据图片内容作答" : "")
+            : request.Question.Trim();
+
         // 1. 检索并推送命中明细
-        var references = await semanticSearch.SearchWithScoreAsync(request.Question, request.DocumentId, topK, cancellationToken);
+        var references = string.IsNullOrWhiteSpace(searchQuery)
+            ? []
+            : await semanticSearch.SearchWithScoreAsync(searchQuery, request.DocumentId, topK, cancellationToken);
         yield return new ChatStreamEvent { Type = "meta", References = references };
 
         string mode = "model";
@@ -187,7 +262,7 @@ public class ChatService(
                 yield break;
             }
 
-            var strictMessages = BuildMessages(StrictKnowledgeBasePrompt, references, request);
+            var strictMessages = BuildLlmMessages(StrictKnowledgeBasePrompt, references, request);
             await foreach (var update in StreamModelAsync(strictMessages, request, cancellationToken))
             {
                 if (update.Kind == SenseNovaDeltaKind.Reasoning)
@@ -215,7 +290,7 @@ public class ChatService(
         }
 
         // 2. 智慧病历模式：流式输出，先缓冲首行解析 [知识库]/[模型] 标记
-        var smartMessages = BuildMessages(SystemPrompt, references, request);
+        var smartMessages = BuildLlmMessages(SystemPrompt, references, request);
         bool modeResolved = false;
         await foreach (var update in StreamModelAsync(smartMessages, request, cancellationToken))
         {
@@ -291,10 +366,10 @@ public class ChatService(
     }
 
     private IAsyncEnumerable<SenseNovaDelta> StreamModelAsync(
-        List<ChatMessage> messages, ChatRequest request, CancellationToken cancellationToken)
+        List<object> messages, ChatRequest request, CancellationToken cancellationToken)
     {
         var thinking = request.Thinking == true;
-        return senseNova.CompleteStreamAsync(ToLlmMessages(messages), thinking, request.ReasoningEffort, cancellationToken);
+        return senseNova.CompleteStreamAsync(messages, thinking, request.ReasoningEffort, cancellationToken);
     }
 
     /// <summary>标记可在行首，同一行后面的正文保留；未输出标记时用向量余弦兜底。</summary>

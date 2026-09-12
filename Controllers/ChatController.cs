@@ -60,7 +60,7 @@ public class ChatController(ChatService chatService) : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task StreamChat([FromBody] ChatRequest request, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.Question))
+        if (string.IsNullOrWhiteSpace(request.Question) && !ChatService.HasImages(request))
         {
             Response.StatusCode = StatusCodes.Status400BadRequest;
             await Response.WriteAsJsonAsync(new { message = "问题不能为空。" }, cancellationToken);

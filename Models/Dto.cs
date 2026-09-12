@@ -223,6 +223,20 @@ public class ChatRequest
 
     /// <summary>推理等级：low / medium / high。thinking=false 时忽略</summary>
     public string? ReasoningEffort { get; set; }
+
+    /// <summary>当前用户消息附带的图片（data URL 或 https）。按商汤 image_url 多模态协议转发。</summary>
+    public List<string>? Images { get; set; }
+
+    /// <summary>前端完整消息列表（含 images）。若未单独传 Images，则从最后一条 user 消息提取。</summary>
+    public List<IncomingChatMessage>? Messages { get; set; }
+}
+
+/// <summary>前端传入的一条对话消息（可含图片）</summary>
+public class IncomingChatMessage
+{
+    public string? Role { get; set; }
+    public string? Content { get; set; }
+    public List<string>? Images { get; set; }
 }
 
 /// <summary>多轮对话的历史消息</summary>
@@ -231,7 +245,9 @@ public class ChatHistoryMessage
     /// <summary>角色：user 或 assistant</summary>
     public required string Role { get; set; }
     /// <summary>消息正文</summary>
-    public required string Content { get; set; }
+    public string Content { get; set; } = "";
+    /// <summary>该轮用户消息附带的图片</summary>
+    public List<string>? Images { get; set; }
 }
 
 /// <summary>回答引用的来源（按文档聚合，出现在 SSE end 事件的 sources）</summary>

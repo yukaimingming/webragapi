@@ -32,6 +32,7 @@ builder.Host.UseSerilog((_, loggerConfiguration) => loggerConfiguration
 
 // ---------- 控制器与 API 文档 ----------
 // 枚举（任务/文件状态等）序列化为字符串，接口返回更易读
+builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = 32 * 1024 * 1024);
 builder.Services.AddControllers().AddJsonOptions(options =>
     options.JsonSerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
 // 内置 OpenAPI 文档生成（.NET 10 自带，XML 注释会进入文档，由 Scalar 展示）

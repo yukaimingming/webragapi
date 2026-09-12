@@ -48,17 +48,20 @@ dotnet run
 
 ### 流式问答事件格式（/api/chat/stream）
 
-请求体示例（可带深度思考参数）：
+请求体示例（可带深度思考与图片）：
 
 ```json
 {
-  "question": "高血压管理指南",
+  "question": "图片里有什么",
+  "images": ["data:image/jpeg;base64,..."],
   "history": [],
   "topK": 8,
   "thinking": true,
   "reasoningEffort": "medium"
 }
 ```
+
+图片按商汤文档以 `content` 数组中的 `image_url` 块发给模型（data URL 或 https）。纯文字时 `content` 仍是字符串。
 
 响应为 SSE（`event:` + `data: {JSON}`）：
 
@@ -96,6 +99,7 @@ SSE 事件也会即时推送，不会被代理缓冲到请求结束才一次性�
 - **批量入库**：按**文档提交**——一篇解析切块并 Upsert 成功后，再删该篇旧切块；失败只回滚本篇新点，不删其它文档。单篇内仍按 `Knowledge:ChunkWriteBatchSize`（默认 32）批量 embedding。导入任务全局串行，避免并行互踩。
 - **无需重启**：上传后后台异步导入（返回 taskId 可查进度），导入完成后立即可被检索/问答，不用重启服务。
 - **流式输出**：Demo 页与悬浮助手都走 `/api/chat/stream`（SSE）。悬浮助手（AI-Emr-Floating-Assistant）不再直连商汤。
+- **图片问答（多模态）**：请求可带 `images`（`data:image/...;base64,...` 或 https），也可从 `messages` 最后一条 user 的 `images` 提取。后端按 OpenAI 兼容协议转成 `content` 数组里的 `image_url` 再调聊天模型。只发图、不打字也可以。纯文本模型不支持 vision 时发图可能报错或被忽略；知识库检索（Ollama bge-m3）不受影响。请求体上限约 32MB。
 - **导入任务面板**：`GET /api/knowledge/tasks` 列出最近任务；文本提取与 OCR 都得不到内容时，会在任务明细中给出 0 切块警告。
 - **扫描件 OCR**：无文字层的 PDF 页会自动用本地 Tesseract（`chi_sim` 简体中文）识别；png/jpg/jpeg/tif/bmp 图片扫描件同样走 OCR。有文字层的 PDF 仍抽文字，不 OCR。模型文件在 `tessdata/chi_sim.traineddata`。识别率不是 100%（印刷体中文常见错字，如药名形近字），目前未接 PaddleOCR。
 - **文档目录**：`App_Data/Documents`（相对项目根目录，可在 `appsettings.json` 的 `Knowledge:DocumentsPath` 修改）。
@@ -198,6 +202,7 @@ Demo 页检索区可切换三种模式，结果里会带最终得分，以及可
 - 深度思考按商汤 OpenAI 兼容协议发送 `reasoning_effort`；开启时另附 `thinking.type=enabled`。思考内容识别 `delta.reasoning` / `delta.reasoning_content`。
 - Ollama 大批量 embedding 会压垮 runner，`BatchingEmbeddingGenerator` 自动拆小批（复用 AIChatApp）。
 - 对话接口只有 `/api/chat/stream`（另有 `/api/chat/config` 返回公开模型能力）。已去掉一次性 JSON 的 `POST /api/chat`。知识库管理接口见上表，不要删。
+- 图片问答：`ChatService.BuildContent` 把图转成 `image_url`（data URL）；聊天走 `SenseNovaCompletionService`（OpenAI 兼容 `/chat/completions`）。换支持 vision 的兼容接口一般只改 `Chat:*` 配置。
 
 ## 客户端自动更新
 
