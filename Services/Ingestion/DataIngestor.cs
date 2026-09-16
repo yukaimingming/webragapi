@@ -1,7 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DataIngestion;
-using Microsoft.Extensions.DataIngestion.Chunkers;
 using Microsoft.ML.Tokenizers;
 using Qdrant.Client;
 using Qdrant.Client.Grpc;
@@ -69,11 +68,7 @@ public class DataIngestor(
     {
         int writeBatchSize = configuration.GetValue("Knowledge:ChunkWriteBatchSize", 32);
         var reader = new DocumentReader(directory, loggerFactory);
-        var chunker = new SemanticSimilarityChunker(embeddingGenerator, new IngestionChunkerOptions(Tokenizer)
-        {
-            MaxTokensPerChunk = 1024,
-            OverlapTokens = 50,
-        });
+        var chunker = new ParentChildChunker(Tokenizer);
 
         bool anyImported = false;
         foreach (var progress in files)

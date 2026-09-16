@@ -129,9 +129,22 @@ public class QdrantChunkWriter(
                 if (!string.IsNullOrEmpty(meta.ContentHash))
                     payload["contenthash"] = new() { StringValue = meta.ContentHash };
 
-                // PDF 等按页解析的文档：从切块元数据里提取页码（若切块器有输出）
+                // 仅写入 >0 的页码（PDF）；md/docx 不写该字段
                 if (TryGetPageNumber(chunk, out var pageNumber))
                     payload["page_number"] = new() { IntegerValue = pageNumber };
+
+                // 父子树与实体：检索打子块，问答可回挂父段
+                if (chunk.HasMetadata)
+                {
+                    if (chunk.Metadata.TryGetValue("parentid", out var pid) && pid is string parentId)
+                        payload["parentid"] = new() { StringValue = parentId };
+                    if (chunk.Metadata.TryGetValue("parenttext", out var pt) && pt is string parentText)
+                        payload["parenttext"] = new() { StringValue = parentText };
+                    if (chunk.Metadata.TryGetValue("chunkrole", out var role) && role is string roleStr)
+                        payload["chunkrole"] = new() { StringValue = roleStr };
+                    if (chunk.Metadata.TryGetValue("entities", out var ent) && ent is string entStr && entStr.Length > 0)
+                        payload["entities"] = new() { StringValue = entStr };
+                }
 
                 var id = Guid.NewGuid();
                 WrittenPointIds.Add(id);
@@ -176,7 +189,7 @@ public class QdrantChunkWriter(
                 _ => null,
             };
 
-            if (candidate is not null && long.TryParse(candidate, out var parsed))
+            if (candidate is not null && long.TryParse(candidate, out var parsed) && parsed > 0)
             {
                 pageNumber = parsed;
                 return true;

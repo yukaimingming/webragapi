@@ -32,6 +32,132 @@ dotnet run
 - 接口文档（Scalar）：<http://localhost:5000/scalar>（接口说明来自控制器 XML 注释）
 - 网页验证 Demo：<http://localhost:5000/>（`wwwroot/index.html`，Element Plus）
 
+## 技术栈与流程
+
+```mermaid
+flowchart TB
+  subgraph clients["接入端"]
+    Demo["Demo 页<br/>Vue 3 + Element Plus"]
+    Assist["悬浮助手<br/>WPF / Win32"]
+    Scalar["Scalar 接口文档"]
+  end
+
+  subgraph api["WebRagApi · .NET 10 / ASP.NET Core / Kestrel"]
+    Chat["ChatService<br/>SSE 流式 RAG"]
+    Know["KnowledgeService<br/>上传 / 去重 / 任务"]
+    Search["SemanticSearch<br/>混合检索"]
+    Ingest["DataIngestor"]
+  end
+
+  subgraph ingest["导入管道"]
+    Parse["PdfPig / OpenXML / Markdown"]
+    Ocr["Tesseract OCR<br/>chi_sim"]
+    Clean["DocumentCleaner<br/>页眉页脚页码水印"]
+    Chunk["ParentChildChunker<br/>父子切块 + 医学实体"]
+    Embed["Ollama bge-m3<br/>1024 维向量"]
+  end
+
+  subgraph retrieve["检索管道"]
+    Vec["Qdrant 向量召回"]
+    Bm25["内存 BM25"]
+    Rrf["RRF 融合"]
+    Rerank["Cross-Encoder 形态重排"]
+  end
+
+  subgraph store["存储与模型"]
+    Qdrant["Qdrant Docker<br/>切块 + payload"]
+    Disk["App_Data/Documents<br/>源文件 SHA256"]
+    Sense["商汤 SenseNova<br/>sensenova-6.8-flash-lite<br/>文本 + image_url"]
+  end
+
+  Demo --> Chat
+  Demo --> Know
+  Demo --> Search
+  Assist --> Chat
+  Assist --> Know
+  Scalar -.-> api
+
+  Know --> Ingest
+  Ingest --> Parse --> Clean --> Chunk
+  Parse --> Ocr --> Clean
+  Chunk --> Embed --> Qdrant
+  Know --> Disk
+
+  Chat --> Search
+  Search --> Vec --> Qdrant
+  Search --> Bm25
+  Vec --> Rrf
+  Bm25 --> Rrf --> Rerank
+  Rerank --> Chat
+  Chat --> Sense
+```
+
+| 环节 | 技术 |
+| ---- | ---- |
+| 运行时 | .NET 10、ASP.NET Core、Kestrel |
+| 文档解析 | PdfPig、OpenXML（docx）、Markdown、老 doc |
+| 扫描件 | Tesseract `chi_sim`、SkiaSharp 渲染 |
+| 切块 / 图谱轻量 | 父子层次树、医学实体词典（不上 Neo4j） |
+| 向量 | 本地 Ollama `bge-m3:567m`，1024 维余弦 |
+| 向量库 | Qdrant（Docker，数据在 `qdrant_storage`） |
+| 词法检索 | 内存 BM25 + RRF + 成对重排 |
+| 生成 | 商汤 SenseNova 流式 Chat Completions（可图文） |
+| Demo / 文档 | Vue 3、Element Plus、Scalar OpenAPI |
+
+## 目录结构
+
+```text
+webragapi/
+├── Program.cs                          # 启动：DI、Qdrant、Ollama、商汤、OpenAPI/Scalar、静态页
+├── WebRagApi.csproj                    # 包引用；生成 XML 注释给 Scalar；复制 tessdata
+├── WebRagApi.slnx                      # 解决方案
+├── appsettings.json                    # 聊天/向量/知识库/检索/更新清单（不含密钥）
+├── appsettings.Development.json        # 开发覆盖
+├── Controllers/
+│   ├── ChatController.cs               # GET /api/chat/config、POST /api/chat/stream（SSE，可带图）
+│   ├── KnowledgeController.cs          # 文档上传/列表/详情/删除、导入任务、检索
+│   └── UpdateController.cs             # GET /api/update/manifest 客户端更新清单
+├── Models/
+│   ├── Dto.cs                          # 请求/响应 DTO（含 images、父子切块 parentText/entities）
+│   ├── ChatOptions.cs                  # Chat:* 商汤 Endpoint/Model/ApiKey
+│   ├── RetrievalOptions.cs             # Retrieval:* 默认 rerank、RRF k
+│   └── UpdateOptions.cs                # 更新包版本、SHA256、下载地址
+├── Services/
+│   ├── ChatService.cs                  # RAG 问答：检索→组上下文→商汤流式；图片转 image_url
+│   ├── SenseNovaCompletionService.cs   # 调商汤 /v1/chat/completions（含 thinking）
+│   ├── SemanticSearch.cs               # 向量 + BM25 + RRF + 重排；查询实体扩展
+│   ├── KnowledgeService.cs             # 上传落盘、哈希去重、列表缓存、删除
+│   ├── IngestionTaskManager.cs         # 导入任务进度（内存）
+│   ├── BatchingEmbeddingGenerator.cs   # Ollama embedding 再拆小批
+│   ├── FinishReasonRewriteHandler.cs   # 兼容商汤流式 finish_reason
+│   ├── GlobalExceptionHandler.cs       # 全局异常
+│   ├── Ingestion/                      # 解析 → 清洗 → 切块 → 写入
+│   │   ├── DataIngestor.cs             # 按文档提交入库；全局串行；失败只回滚本篇
+│   │   ├── DocumentReader.cs           # 按扩展名分发 pdf/docx/doc/md/图片
+│   │   ├── PdfPigReader.cs             # PDF 文字层；无字则 OCR；去掉页顶/页底带
+│   │   ├── DocxReader.cs / BinaryDocReader.cs
+│   │   ├── ImageOcrReader.cs           # 扫描件图片 OCR
+│   │   ├── TesseractOcr.cs             # 本地 Tesseract chi_sim
+│   │   ├── DocumentCleaner.cs          # 去页码、重复水印/页眉页脚短句
+│   │   ├── ParentChildChunker.cs       # 父子切块树（父=小节，子≈280 token 入库）
+│   │   ├── MedicalEntityTagger.cs      # 医学实体标签 + 心衰→心力衰竭 等扩展
+│   │   ├── QdrantChunkWriter.cs        # 切块向量化写入；payload 含 parent/entities
+│   │   └── ContentHash.cs              # 文件 SHA256，边拷边哈希
+│   └── Retrieval/
+│       ├── Bm25Index.cs                # 内存 BM25 倒排（含实体词）
+│       ├── ReciprocalRankFusion.cs     # RRF 融合向量与 BM25
+│       ├── CrossEncoderReranker.cs     # 成对打分重排（尚未加载 bge-reranker 权重）
+│       ├── ChineseLexicalTokenizer.cs  # 汉字单字+二字、拉丁词
+│       └── DocumentCatalog.cs          # 文档列表缓存（只滚元数据）
+├── wwwroot/
+│   ├── index.html                      # Demo：上传/检索/SSE 问答（Element Plus）
+│   └── updates/                        # 客户端 ZIP；*.zip 不进 Git（GitHub 单文件 100MB 上限）
+├── tessdata/chi_sim.traineddata        # Tesseract 简体中文模型（随项目复制到输出目录）
+├── scripts/                            # 更新包 SHA256 计算脚本
+├── App_Data/                           # 运行时：上传文档等（不进 Git）
+└── qdrant_storage/                     # Qdrant 磁盘数据（不进 Git）
+```
+
 ## 接口一览
 
 | 接口 | 方法 | 作用 |
@@ -103,7 +229,9 @@ SSE 事件也会即时推送，不会被代理缓冲到请求结束才一次性�
 - **导入任务面板**：`GET /api/knowledge/tasks` 列出最近任务；文本提取与 OCR 都得不到内容时，会在任务明细中给出 0 切块警告。
 - **扫描件 OCR**：无文字层的 PDF 页会自动用本地 Tesseract（`chi_sim` 简体中文）识别；png/jpg/jpeg/tif/bmp 图片扫描件同样走 OCR。有文字层的 PDF 仍抽文字，不 OCR。模型文件在 `tessdata/chi_sim.traineddata`。识别率不是 100%（印刷体中文常见错字，如药名形近字），目前未接 PaddleOCR。
 - **文档目录**：`App_Data/Documents`（相对项目根目录，可在 `appsettings.json` 的 `Knowledge:DocumentsPath` 修改）。
-- **切块策略**：语义切块（SemanticSimilarityChunker），每块 ≤1024 token、重叠 50 token。
+- **文档清洗**：导入时去掉页码行、跨页重复的短页眉/页脚/水印；PDF 再按坐标去掉页顶/页底约 7% 的文字带。Word 页眉页脚本身不在正文 part，不会进库。尚未做：印章图形擦除、栏间乱序重排、表格结构还原。
+- **切块策略**：父子层次树（Parent-Child）。父块=同一标题下的小节；子块≈280 token（重叠 40）写入向量库，payload 带 `parentid` / `parenttext` / `entities`。检索命中子块后把父段扩进问答上下文。不上 Neo4j。
+- **医学实体**：规则词典打标签（病种/药名/检查等）并做查询同义词扩展（如 心衰→心力衰竭）。
 - **检索管道**：见下方「检索管道（向量 + BM25 + RRF + 重排）」。
 - **模型**：聊天 `sensenova-6.8-flash-lite`（商汤）；向量 `bge-m3:567m`（本地 Ollama，1024 维，余弦相似度）。
 

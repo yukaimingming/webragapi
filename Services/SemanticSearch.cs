@@ -30,15 +30,16 @@ public class SemanticSearch(
     {
         var options = retrievalOptions.Value;
         var resolved = NormalizeMode(mode, options.DefaultMode);
-        // 融合/重排前每路多取一些，避免只看向量 TopK 把词法命中挤掉
+        // 心衰→心力衰竭 等同义词展开，主要帮 BM25
+        var query = MedicalEntityTagger.ExpandQuery(text);
         int fetch = Math.Clamp(maxResults * Math.Max(1, options.CandidateMultiplier), maxResults, 50);
 
         if (resolved == "vector")
-            return await SearchVectorAsync(text, documentIdFilter, maxResults, cancellationToken);
+            return await SearchVectorAsync(query, documentIdFilter, maxResults, cancellationToken);
 
         await bm25Index.EnsureReadyAsync(cancellationToken);
-        var vectorTask = SearchVectorAsync(text, documentIdFilter, fetch, cancellationToken);
-        var bm25 = bm25Index.Search(text, fetch, documentIdFilter);
+        var vectorTask = SearchVectorAsync(query, documentIdFilter, fetch, cancellationToken);
+        var bm25 = bm25Index.Search(query, fetch, documentIdFilter);
         var vector = await vectorTask;
 
         // RRF 只看名次，向量余弦和 BM25 原始分不必对齐
@@ -72,17 +73,37 @@ public class SemanticSearch(
             return [];
         }
 
-        return points.Select(p => new SearchResultItem
+        return points.Select(p => MapPoint(p)).ToList();
+    }
+
+    private static SearchResultItem MapPoint(ScoredPoint p)
+    {
+        var child = GetPayload(p, "content") ?? string.Empty;
+        var parent = GetPayload(p, "parenttext");
+        var entities = ReadEntities(p);
+        return new SearchResultItem
         {
             ChunkId = p.Id.HasUuid ? p.Id.Uuid : p.Id.Num.ToString(),
             DocumentId = GetPayload(p, "documentid") ?? "(未知)",
             FileName = GetPayload(p, "filename") ?? GetPayload(p, "documentid") ?? "(未知)",
             Score = p.Score,
             VectorScore = p.Score,
-            Text = GetPayload(p, "content") ?? string.Empty,
+            Text = child,
             Context = string.IsNullOrEmpty(GetPayload(p, "context")) ? null : GetPayload(p, "context"),
-            PageNumber = p.Payload.TryGetValue("page_number", out var pv) && pv.HasIntegerValue ? (int)pv.IntegerValue : null,
-        }).ToList();
+            PageNumber = p.Payload.TryGetValue("page_number", out var pv) && pv.HasIntegerValue && pv.IntegerValue > 0
+                ? (int)pv.IntegerValue : null,
+            ParentText = string.IsNullOrEmpty(parent) || parent == child ? null : parent,
+            Entities = entities.Count > 0 ? entities : null,
+        };
+    }
+
+    private static List<string> ReadEntities(ScoredPoint p)
+    {
+        var list = new List<string>();
+        if (!p.Payload.TryGetValue("entities", out var v) || !v.HasStringValue || v.StringValue.Length == 0)
+            return list;
+        list.AddRange(v.StringValue.Split('|', StringSplitOptions.RemoveEmptyEntries));
+        return list;
     }
 
     private static string NormalizeMode(string? mode, string defaultMode)

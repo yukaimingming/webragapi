@@ -195,6 +195,10 @@ public class SearchResultItem
     public string? Context { get; set; }
     /// <summary>页码；非 PDF 可为空</summary>
     public int? PageNumber { get; set; }
+    /// <summary>父段全文（父子切块命中子块时带回，供问答扩上下文）</summary>
+    public string? ParentText { get; set; }
+    /// <summary>医学实体标签</summary>
+    public List<string>? Entities { get; set; }
 }
 
 /// <summary>POST /api/chat/stream 请求</summary>

@@ -53,6 +53,8 @@ internal static class ReciprocalRankFusion
         Text = item.Text,
         Context = item.Context,
         PageNumber = item.PageNumber,
+        ParentText = item.ParentText,
+        Entities = item.Entities,
     };
 
     /// <summary>同一切块出现在多路结果里时，把向量分和 BM25 分合并到同一条上。</summary>
@@ -61,6 +63,8 @@ internal static class ReciprocalRankFusion
         a.VectorScore ??= b.VectorScore;
         a.Bm25Score ??= b.Bm25Score;
         a.ChunkId ??= b.ChunkId;
+        a.ParentText ??= b.ParentText;
+        a.Entities ??= b.Entities;
         return a;
     }
 }

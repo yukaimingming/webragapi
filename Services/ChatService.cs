@@ -41,7 +41,7 @@ public class ChatService(
         - 禁止以“只能回答医疗健康相关问题”拒绝。知识库里有答案就必须答，与是否医疗无关。
         - 正例：问辞职批复，上下文有卫生局文件 → [知识库]；问量子比特，上下文有量子计算手册 → [知识库]。
         - 不要编造知识库之外的关键事实；上下文不完整时可以补充，但要说明哪些是知识库之外的补充。
-        - 回答末尾用一句话注明依据的文档名和页码。
+        - 回答末尾用一句话注明依据的文档名；仅当上下文里有大于 0 的页码时才写页码，不要写「第 0 页」。
 
         三、仅当知识库上下文无法回答该问题时，才看问题本身是不是医疗健康：
         - 属于医疗健康（疾病、症状、检查、用药、护理、公共卫生等）：基于自身医学知识回答，第一行只输出 [模型]；涉及用药、剂量、诊疗方案时，必须提醒“仅供参考，不能替代执业医师的诊断与处方”，必要时建议就医。
@@ -114,9 +114,16 @@ public class ChatService(
             foreach (var (item, index) in chunks.Select((v, i) => (v, i + 1)))
             {
                 var source = item.Context is { Length: > 0 } ? $"【{item.FileName} | {item.Context}】" : $"【{item.FileName}】";
-                var page = item.PageNumber is not null ? $"（第 {item.PageNumber} 页）" : "";
-                contextBuilder.AppendLine($"[{index}] {source}{page}");
+                // md/docx 无物理页，PageNumber 为空，不要拼「第 0 页」
+                var page = item.PageNumber is > 0 ? $"（第 {item.PageNumber} 页）" : "";
+                var tags = item.Entities is { Count: > 0 } ? $" 实体:{string.Join("、", item.Entities)}" : "";
+                contextBuilder.AppendLine($"[{index}] {source}{page}{tags}");
                 contextBuilder.AppendLine(item.Text);
+                if (!string.IsNullOrEmpty(item.ParentText) && item.ParentText != item.Text)
+                {
+                    contextBuilder.AppendLine("（所属小节）");
+                    contextBuilder.AppendLine(item.ParentText);
+                }
                 contextBuilder.AppendLine();
             }
         }
@@ -215,7 +222,7 @@ public class ChatService(
             {
                 DocumentId = g.Key,
                 FileName = g.First().FileName,
-                PageNumbers = g.Where(r => r.PageNumber.HasValue)
+                PageNumbers = g.Where(r => r.PageNumber is > 0)
                     .Select(r => r.PageNumber!.Value).Distinct().OrderBy(v => v).ToList(),
             })
             .ToList();

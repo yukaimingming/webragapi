@@ -86,7 +86,13 @@ internal sealed class PdfPigReader(ILogger<PdfPigReader>? logger = null) : Inges
             PageNumber = pdfPage.Number,
         };
 
-        var letters = pdfPage.Letters;
+        // PDF 坐标系原点在左下：去掉顶部页眉带、底部页脚带，减少页码/重复院名进入切块
+        double h = pdfPage.Height;
+        double footerMax = h * 0.07;
+        double headerMin = h * 0.93;
+        var letters = pdfPage.Letters
+            .Where(l => l.BoundingBox.Bottom > footerMax && l.BoundingBox.Top < headerMin)
+            .ToList();
         var words = NearestNeighbourWordExtractor.Instance.GetWords(letters);
 
         foreach (var textBlock in DocstrumBoundingBoxes.Instance.GetBlocks(words))

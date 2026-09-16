@@ -171,7 +171,8 @@ public sealed class Bm25Index(QdrantClient qdrantClient, ILogger<Bm25Index> logg
             foreach (var p in list)
             {
                 var text = Payload(p, "content") ?? string.Empty;
-                var tokens = ChineseLexicalTokenizer.Tokenize(text);
+                var entityBlob = ReadEntityBlob(p);
+                var tokens = ChineseLexicalTokenizer.Tokenize(string.IsNullOrEmpty(entityBlob) ? text : text + "\n" + entityBlob);
                 var tf = new Dictionary<string, int>(StringComparer.Ordinal);
                 foreach (var t in tokens)
                     tf[t] = tf.TryGetValue(t, out var n) ? n + 1 : 1;
@@ -213,6 +214,13 @@ public sealed class Bm25Index(QdrantClient qdrantClient, ILogger<Bm25Index> logg
     private static string? Payload(RetrievedPoint point, string key)
         => point.Payload.TryGetValue(key, out var v) && v.HasStringValue && v.StringValue.Length > 0
             ? v.StringValue : null;
+
+    private static string ReadEntityBlob(RetrievedPoint point)
+    {
+        if (!point.Payload.TryGetValue("entities", out var v) || !v.HasStringValue)
+            return "";
+        return v.StringValue.Replace('|', ' ');
+    }
 
     private sealed class ChunkDoc
     {
