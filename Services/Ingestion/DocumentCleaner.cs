@@ -10,11 +10,10 @@ namespace WebRagApi.Services.Ingestion;
 /// </summary>
 internal static class DocumentCleaner
 {
+    // 整行页码：第 N 页、-12-、1/20、Page 3，以及中文文献常见的单独一行纯数字（1～3 位，避免误删 2024 这类年份）
     private static readonly Regex PageNumberLine = new(
-        @"^(?:第\s*\d+\s*页(?:\s*[\/共]\s*\d+\s*页)?|-+\s*\d+\s*-+|—\s*\d+\s*—|\d+\s*\/\s*\d+|Page\s+\d+(?:\s*of\s*\d+)?)$",
+        @"^(?:第\s*\d+\s*页(?:\s*[\/共]\s*\d+\s*页)?|-+\s*\d+\s*-+|—\s*\d+\s*—|\d+\s*\/\s*\d+|Page\s+\d+(?:\s*of\s*\d+)?|\d{1,3}|\[\d{1,3}\]|〔\d{1,3}〕)$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex IsolatedPageNum = new(@"第\s*\d+\s*页", RegexOptions.Compiled);
 
     /// <summary>就地清洗文档各节元素；空段丢弃。</summary>
     public static void Clean(IngestionDocument document)
@@ -56,8 +55,6 @@ internal static class DocumentCleaner
                 continue;
             if (repeatingLines is not null && repeatingLines.Contains(NormalizeKey(line)))
                 continue;
-            if (line.Length <= 2 && IsolatedPageNum.IsMatch(line))
-                continue;
             if (sb.Length > 0)
                 sb.Append('\n');
             sb.Append(line);
@@ -65,11 +62,19 @@ internal static class DocumentCleaner
         return sb.ToString().Trim();
     }
 
-    /// <summary>出现在足够多页上的短句视为页眉/页脚/水印。</summary>
+    /// <summary>
+    /// 跨页重复的短句视为页眉/页脚/水印。
+    /// 仅对带真实 PageNumber 的多页文档（PDF 一页一节）按「页」计频率；
+    /// md/docx 的 section 不是页，不做这项统计，避免把重复小标题当水印。
+    /// </summary>
     private static HashSet<string> FindRepeatingLines(IngestionDocument document)
     {
+        var paged = document.Sections.Where(s => s.PageNumber is > 0).ToList();
+        if (paged.Count < 3)
+            return [];
+
         var perPage = new List<HashSet<string>>();
-        foreach (var section in document.Sections)
+        foreach (var section in paged)
         {
             var keys = new HashSet<string>(StringComparer.Ordinal);
             foreach (var el in section.Elements)
@@ -94,38 +99,12 @@ internal static class DocumentCleaner
                 freq[k] = freq.TryGetValue(k, out var n) ? n + 1 : 1;
         }
 
+        int threshold = Math.Max(3, (int)Math.Ceiling(perPage.Count * 0.4));
         var result = new HashSet<string>(StringComparer.Ordinal);
-        int pageCount = Math.Max(perPage.Count, 1);
-        if (pageCount >= 3)
+        foreach (var (k, n) in freq)
         {
-            int threshold = Math.Max(3, (int)Math.Ceiling(pageCount * 0.4));
-            foreach (var (k, n) in freq)
-            {
-                if (n >= threshold && !LooksLikeContent(k))
-                    result.Add(k);
-            }
-        }
-        else
-        {
-            var occ = new Dictionary<string, int>(StringComparer.Ordinal);
-            foreach (var section in document.Sections)
-            {
-                foreach (var el in section.Elements)
-                {
-                    if (string.IsNullOrWhiteSpace(el.Text)) continue;
-                    foreach (var line in el.Text.Replace("\r\n", "\n").Split('\n'))
-                    {
-                        var key = NormalizeKey(line);
-                        if (key.Length is >= 2 and <= 40)
-                            occ[key] = occ.TryGetValue(key, out var n) ? n + 1 : 1;
-                    }
-                }
-            }
-            foreach (var (k, n) in occ)
-            {
-                if (n >= 3 && !LooksLikeContent(k))
-                    result.Add(k);
-            }
+            if (n >= threshold && !LooksLikeContent(k))
+                result.Add(k);
         }
         return result;
     }
